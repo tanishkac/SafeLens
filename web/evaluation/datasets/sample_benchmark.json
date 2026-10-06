@@ -1,0 +1,74 @@
+[
+  {
+    "id": "case_001_hate_symbol_visual",
+    "description": "Visual hate symbol with quiet ambient background audio",
+    "ground_truth_harmful": 1,
+    "category": "Hate Symbols",
+    "audio_text": "Background footsteps and quiet room ambience.",
+    "ocr_text": "No text detected",
+    "captions_text": "A close-up frame showing a red flag with a black Nazi swastika inside a white circle hanging on the wall."
+  },
+  {
+    "id": "case_002_hate_speech_audio",
+    "description": "Explicit discriminatory hate speech in speech transcript",
+    "ground_truth_harmful": 1,
+    "category": "Hate Speech",
+    "audio_text": "We need to eliminate those subhuman vermin from our society, purge them all.",
+    "ocr_text": "No OCR text detected",
+    "captions_text": "A man standing behind a wooden podium speaking into a microphone."
+  },
+  {
+    "id": "case_003_violent_assault",
+    "description": "Physical violence and assault depicted in frames",
+    "ground_truth_harmful": 1,
+    "category": "Violence",
+    "audio_text": "Screaming, thuds, and calls for help in the background.",
+    "ocr_text": "No text detected",
+    "captions_text": "Multiple individuals violently beating an unarmed person on the ground with blunt weapons."
+  },
+  {
+    "id": "case_004_ocr_extremist_slogan",
+    "description": "Extremist hate slogan printed on large on-screen protest banner",
+    "ground_truth_harmful": 1,
+    "category": "Hate Symbols",
+    "audio_text": "Crowd cheering and chanting rhythmically.",
+    "ocr_text": "BLOOD AND SOIL 1488 WHITE POWER",
+    "captions_text": "Crowd of people marching with torches carrying banners."
+  },
+  {
+    "id": "case_005_benign_ww2_documentary",
+    "description": "Historical documentary discussing Nazi defeat (Educational/Safe)",
+    "ground_truth_harmful": 0,
+    "category": "Historical/Educational",
+    "audio_text": "In May 1945, Allied forces entered Berlin, bringing an end to the horrific Nazi regime and liberating surviving victims.",
+    "ocr_text": "World War II: The Fall of the Third Reich",
+    "captions_text": "Black and white historical archival footage showing military maps and archival photos of soldiers."
+  },
+  {
+    "id": "case_006_benign_news_reporting",
+    "description": "Journalistic news anchor covering civic protests",
+    "ground_truth_harmful": 0,
+    "category": "News/Journalistic",
+    "audio_text": "Local authorities report peaceful demonstrations concluded this evening near city hall.",
+    "ocr_text": "BREAKING NEWS: City Council Approves New Infrastructure Bill",
+    "captions_text": "A news anchor sitting at a professional broadcast desk in a news studio."
+  },
+  {
+    "id": "case_007_benign_cooking_tutorial",
+    "description": "Everyday benign cooking tutorial",
+    "ground_truth_harmful": 0,
+    "category": "Everyday Safe",
+    "audio_text": "Now add two tablespoons of olive oil and let the garlic simmer on medium heat for two minutes.",
+    "ocr_text": "Step 3: Simmering Garlic in Olive Oil",
+    "captions_text": "Hands chopping fresh garlic on a wooden cutting board with a stainless steel knife."
+  },
+  {
+    "id": "case_008_benign_gaming_action",
+    "description": "Video game gameplay with fictional combat",
+    "ground_truth_harmful": 0,
+    "category": "Gaming/Fiction",
+    "audio_text": "Nice shot! Let's rotate to point B and grab the energy shield.",
+    "ocr_text": "SCORE: 2400 | SHIELD: 100%",
+    "captions_text": "A cartoon/sci-fi video game screen with colorful laser effects and robotic characters."
+  }
+]

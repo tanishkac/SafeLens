@@ -1,0 +1,1552 @@
+"""
+Segment-level analysis module for PR2 implementation.
+
+This module analyzes video segments by sampling frames, gathering evidence from
+multiple modalities (vision, OCR, audio), and making LLM-based harm decisions.
+"""
+
+# It brings together the components you showed earlier: WhisperX + frame extraction + Qwen vision + OCR + an LLM judge
+
+#analyze_segments
+import os 
+import asyncio
+import json
+import logging
+import time
+from typing import List, Dict, Any, Optional, Tuple
+from dataclasses import dataclass
+from pathlib import Path
+from contextlib import contextmanager
+
+from ...tools.frame_extraction import extract_frames
+from ...tools.image_classifier import classify_image
+from ...tools.ocr import run_ocr
+from ...tools.llm import SafetyLLM
+from ...tools.transcription import transcribe_whole_video
+from .segmentation_config import SegmentationConfig
+from .calibrator import ConfidenceCalibrator
+from ..planning.llm_planner import (
+    LLMPlannerConfig,
+    suspicion_score as llm_suspicion_score,
+    propose_points,
+    merge_timestamps_with_planning,
+)
+from ..runtime.gpu_guard import gpu_guard
+from ..runtime.metrics import metrics
+
+logger = logging.getLogger(__name__)
+
+
+def _apply_text_hygiene(text_parts: List[str], max_chars: int = 1500) -> str:
+    """
+    Apply text hygiene: dedupe consecutive identical lines and cap total length.
+
+    Args:
+        text_parts: List of text parts to process
+        max_chars: Maximum character limit
+
+    Returns:
+        Cleaned and capped text string
+    """
+    if not text_parts:
+        return ""
+
+    # Dedupe consecutive identical lines
+    deduped_parts = []
+    prev_content = None
+
+    for part in text_parts:
+        # Extract content after timestamp for comparison
+        if "] " in part:
+            content = part.split("] ", 1)[1] if "] " in part else part
+        else:
+            content = part
+
+        if content != prev_content:
+            deduped_parts.append(part)
+            prev_content = content
+
+    # Join and cap total length
+    full_text = "; ".join(deduped_parts)
+
+    if len(full_text) > max_chars:
+        # Try to cut at sentence boundary
+        truncated = full_text[:max_chars]
+        last_period = truncated.rfind(".")
+        last_semicolon = truncated.rfind(";")
+
+        # Cut at the latest sentence/section boundary
+        cut_point = max(last_period, last_semicolon)
+        if cut_point > max_chars * 0.8:  # Only if we don't lose too much
+            full_text = truncated[: cut_point + 1] + "..."
+        else:
+            full_text = truncated + "..."
+
+    logger.debug(
+        f"Text hygiene: {len(text_parts)} -> {len(deduped_parts)} parts, {len(full_text)} chars"
+    )
+    return full_text
+
+
+# Visual suspicion keywords used for probe-based escalation. These are intentionally
+# broader than the final judge categories: false positives here only increase
+# sampling density; the judge still makes the final call.
+VISUAL_SUSPICION_KEYWORDS = {
+    "hate": [
+        "swastika",
+        "nazi",
+        "hitler",
+        "kkk",
+        "white power",
+        "n-word",
+        "kike",
+        "spic",
+        "chink",
+        "towelhead",
+        "raghead",
+        "faggot",
+        "tranny",
+    ],
+    "violence": [
+        "gun",
+        "rifle",
+        "pistol",
+        "weapon",
+        "knife",
+        "blood",
+        "gore",
+        "corpse",
+        "dead body",
+        "shooting",
+        "stabbing",
+        "explosion",
+        "bomb",
+    ],
+    "nudity": [
+        "nudity",
+        "nude",
+        "naked",
+        "porn",
+        "sex",
+        "genitals",
+        "breasts",
+    ],
+    "drugs": [
+        "cocaine",
+        "heroin",
+        "meth",
+        "crack",
+        "fentanyl",
+        "needle",
+        "syringe",
+        "pills",
+    ],
+}
+
+
+def _is_transcript_sparse(segment_text: str, segment_duration_sec: float) -> bool:
+    """
+    Heuristic for segments where the transcript is too sparse to trust audio evidence.
+
+    This is a proxy for silence/music/transcription failure; in these cases we should
+    bias toward denser visual sampling (captioning + OCR).
+    """
+    min_words = int(os.getenv("SEG_MIN_TRANSCRIPT_WORDS", "8"))
+    min_chars = int(os.getenv("SEG_MIN_TRANSCRIPT_CHARS", "40"))
+    min_words_per_sec = float(os.getenv("SEG_MIN_WORDS_PER_SEC", "0.6"))
+
+    text = (segment_text or "").strip()
+    if not text:
+        return True
+
+    words = text.split()
+    if len(words) < min_words:
+        return True
+
+    if len(text) < min_chars:
+        return True
+
+    if segment_duration_sec > 0:
+        if (len(words) / segment_duration_sec) < min_words_per_sec:
+            return True
+
+    return False
+
+
+def _build_probe_timestamps(seg_start: float, seg_end: float, count: int) -> List[float]:
+    """
+    Deterministically choose a small set of timestamps for a cheap visual probe.
+
+    Default intent: roughly start/mid/end, nudged away from exact edges.
+    """
+    if count <= 0:
+        return []
+
+    duration = seg_end - seg_start
+    if duration <= 0:
+        return []
+
+    # Avoid exact boundaries (ffmpeg/OpenCV seeking can be finicky at end-of-file).
+    edge_pad = min(0.25, max(0.01, duration * 0.05))
+    left = min(seg_start + edge_pad, seg_end)
+    right = max(seg_end - edge_pad, seg_start)
+
+    if count == 1:
+        return [seg_start + (duration / 2.0)]
+    if count == 2:
+        return sorted(list({left, right}))
+
+    # 3+ points: include left/mid/right, then fill evenly.
+    points = [left, seg_start + (duration / 2.0), right]
+    if count > 3:
+        inner_start = left
+        inner_end = right
+        if inner_end <= inner_start:
+            return sorted(list({p for p in points if seg_start <= p <= seg_end}))[:count]
+
+        extra_needed = count - 3
+        step = (inner_end - inner_start) / (extra_needed + 1)
+        for i in range(1, extra_needed + 1):
+            points.append(inner_start + step * i)
+
+    # Deduplicate and clamp defensively.
+    out = [p for p in sorted(set(points)) if seg_start <= p <= seg_end]
+    return out[:count]
+
+
+def _score_visual_probe_suspicion(captions_text: str, ocr_text: str) -> Tuple[bool, str]:
+    """
+    Decide whether probe evidence warrants denser sampling for this segment.
+
+    Returns:
+        (suspicious, reason)
+    """
+    combined = f"{captions_text or ''}\n{ocr_text or ''}".lower()
+    combined = combined.strip()
+    if not combined:
+        return False, "empty_probe_evidence"
+
+    hits: List[str] = []
+    for category, keywords in VISUAL_SUSPICION_KEYWORDS.items():
+        for kw in keywords:
+            if kw in combined:
+                hits.append(f"{category}:{kw}")
+                # Keep scanning to allow multiple categories, but cap for logs.
+                if len(hits) >= 4:
+                    break
+        if len(hits) >= 4:
+            break
+
+    if hits:
+        return True, "visual_probe_hits=" + ",".join(hits)
+
+    return False, "no_visual_probe_hits"
+
+
+def _log_sampling_decision(
+    *,
+    video_id: str,
+    seg_index: int,
+    start: float,
+    end: float,
+    sampling_mode: str,
+    num_frames: int,
+    interval_sec: Optional[float],
+    transcript_words: int,
+    transcript_chars: int,
+    transcript_sparse: bool,
+    suspicion_method: str,
+    suspicion_confidence: float,
+    is_suspicious: bool,
+    planned_points: int,
+    probe_frames: int,
+    probe_sampled_frames: int,
+    visual_probe_suspicious: bool,
+    visual_probe_reason: str,
+) -> None:
+    # Single-line structured log for tmux/debug readability.
+    try:
+        interval_txt = f"{interval_sec:.2f}s" if isinstance(interval_sec, (int, float)) else "n/a"
+        logger.info(
+            "Sampling decision: "
+            f"video_id={video_id} seg={seg_index + 1} "
+            f"span=[{start:.1f}-{end:.1f}] "
+            f"mode={sampling_mode} frames={num_frames} interval={interval_txt} "
+            f"probe_frames={probe_frames} probe_sampled={probe_sampled_frames} "
+            f"transcript_words={transcript_words} transcript_chars={transcript_chars} "
+            f"transcript_sparse={transcript_sparse} "
+            f"suspicious={is_suspicious} suspicion_method={suspicion_method} suspicion_conf={suspicion_confidence:.2f} "
+            f"planned_points={planned_points} "
+            f"visual_probe_suspicious={visual_probe_suspicious} visual_probe_reason={visual_probe_reason}"
+        )
+    except Exception:
+        # Never allow logging to break analysis.
+        return
+
+
+# Removed signal-based timeout context manager as it doesn't work in background threads
+# Provider-level timeouts are used instead (ANALYSIS_LLM_TIMEOUT_SEC)
+
+
+# Keywords for suspicion detection - minimal false positives
+SUSPICION_KEYWORDS = {
+    "hate": [
+        "nazi",
+        "hitler",
+        "swastika",
+        "kkk",
+        "white power",
+        "n-word",
+        "jew",
+        "kike",
+        "spic",
+        "chink",
+        "towelhead",
+        "raghead",
+        "faggot",
+        "tranny",
+        "retard",
+    ],
+    "self_harm": [
+        "suicide",
+        "kill myself",
+        "end it all",
+        "razor",
+        "cutting",
+        "self-harm",
+        "overdose",
+        "pills",
+        "jump off",
+        "hang myself",
+    ],
+    "nudity": [
+        "naked",
+        "nude",
+        "penis",
+        "vagina",
+        "boobs",
+        "tits",
+        "ass",
+        "porn",
+        "sex tape",
+        "masturbat",
+        "orgasm",
+        "horny",
+    ],
+    "drugs": [
+        "cocaine",
+        "heroin",
+        "meth",
+        "crack",
+        "weed",
+        "marijuana",
+        "molly",
+        "ecstasy",
+        "lsd",
+        "acid",
+        "shrooms",
+        "xanax",
+        "oxy",
+        "fentanyl",
+    ],
+    "violence": [
+        "kill",
+        "murder",
+        "shoot",
+        "stab",
+        "beat up",
+        "fight",
+        "blood",
+        "weapon",
+        "gun",
+        "knife",
+        "bomb",
+        "explosive",
+        "torture",
+    ],
+    "abuse": [
+        "molest",
+        "rape",
+        "assault",
+        "abuse",
+        "victim",
+        "predator",
+        "kidnap",
+        "traffick",
+        "exploit",
+        "coerce",
+    ],
+}
+
+
+def score_suspicion(
+    segment_text: str,
+    mode: str = "keywords",
+    planner_cfg: Optional["LLMPlannerConfig"] = None,
+    video_id: str = "",
+    seg_index: int = 0,
+    llm: Optional[SafetyLLM] = None,
+) -> Dict[str, Any]:
+    """
+    Score segment for suspicion based on transcript text.
+
+    Args:
+        segment_text: Transcript text for the segment
+        mode: Scoring mode - "keywords", "llm", or "off"
+        planner_cfg: LLMPlannerConfig for LLM scoring (required for mode="llm")
+        video_id: Video ID for caching/logging
+        seg_index: Segment index for caching/logging
+
+    Returns:
+        Dict with 'suspicious' (bool), 'confidence' (float), 'method' (str), and optional other fields
+    """
+    if mode == "off":
+        return {
+            "suspicious": False,
+            "confidence": 0.0,
+            "method": "off",
+            "reason": "Suspicion scoring disabled",
+        }
+
+    if mode == "keywords":
+        if not segment_text:
+            return {
+                "suspicious": False,
+                "confidence": 0.0,
+                "method": "keywords",
+                "reason": "No text available",
+            }
+
+        text_lower = segment_text.lower()
+
+        # Check for any suspicious keywords
+        for category, keywords in SUSPICION_KEYWORDS.items():
+            for keyword in keywords:
+                if keyword in text_lower:
+                    logger.info(
+                        f"Suspicion detected in segment {seg_index}: '{keyword}' in category '{category}'"
+                    )
+                    return {
+                        "suspicious": True,
+                        "confidence": 0.8,  # High confidence for keyword matches
+                        "method": "keywords",
+                        "category": category,
+                        "keyword": keyword,
+                        "reason": f"Keyword '{keyword}' found in {category}",
+                    }
+
+        return {
+            "suspicious": False,
+            "confidence": 0.9,  # High confidence that it's safe
+            "method": "keywords",
+            "reason": "No suspicious keywords found",
+        }
+
+    elif mode == "llm":
+        if planner_cfg is None:
+            logger.warning(
+                "LLM suspicion mode requires planner_cfg, falling back to keywords"
+            )
+            return score_suspicion(segment_text, "keywords", None, video_id, seg_index)
+
+        try:
+            # Use LLM suspicion scoring
+            llm_result = llm_suspicion_score(
+                segment_text, planner_cfg, video_id, seg_index, llm=llm
+            )
+
+            # Add method and process result
+            llm_result["method"] = "llm"
+
+            # Check if it was an error case
+            if llm_result.get("_error"):
+                logger.warning(
+                    f"LLM suspicion error for segment {seg_index}, falling back to keywords"
+                )
+                return score_suspicion(
+                    segment_text, "keywords", None, video_id, seg_index
+                )
+
+            # Convert confidence to suspicion based on threshold
+            threshold = planner_cfg.suspicion_llm_conf_threshold
+            if llm_result["confidence"] >= threshold:
+                llm_result["suspicious"] = True
+
+            logger.debug(
+                f"LLM suspicion for segment {seg_index}: {llm_result['suspicious']} (conf={llm_result['confidence']:.2f})"
+            )
+            return llm_result
+
+        except Exception as e:
+            logger.error(
+                f"LLM suspicion failed for segment {seg_index}: {e}, falling back to keywords"
+            )
+            return score_suspicion(segment_text, "keywords", None, video_id, seg_index)
+
+    else:
+        logger.warning(f"Unknown suspicion mode '{mode}', defaulting to keywords")
+        return score_suspicion(segment_text, "keywords", None, video_id, seg_index)
+
+
+def sample_frames(
+    video_path: str,
+    start: float,
+    end: float,
+    interval_sec: float,
+    cap: int,
+    timestamps: Optional[List[float]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Sample frames from a video segment.
+
+    Args:
+        video_path: Path to video file
+        start: Segment start time in seconds
+        end: Segment end time in seconds
+        interval_sec: Sampling interval in seconds
+        cap: Maximum number of frames to sample
+        timestamps: Optional specific timestamps to sample (overrides interval_sec)
+
+    Returns:
+        List of frame info dicts with 'ts' (timestamp) and 'path' (file path)
+    """
+    # Use provided timestamps or generate periodic ones
+    if timestamps is not None:
+        # Filter timestamps to segment bounds and apply cap
+        segment_timestamps = [ts for ts in timestamps if start <= ts <= end]
+        segment_timestamps = segment_timestamps[:cap]
+    else:
+        # Generate periodic timestamps within the segment
+        segment_timestamps = []
+        current = start
+        while current < end and len(segment_timestamps) < cap:
+            segment_timestamps.append(current)
+            current += interval_sec
+
+    # Extract frames at these timestamps
+    try:
+        frame_paths = extract_frames(video_path, timestamps=segment_timestamps)
+
+        # Build result list with timestamp info
+        results = []
+        for i, path in enumerate(frame_paths):
+            if i < len(segment_timestamps):
+                results.append({"ts": segment_timestamps[i], "path": path})
+
+        logger.info(
+            f"Sampled {len(results)} frames from segment [{start:.1f}s-{end:.1f}s]"
+        )
+        return results
+
+    except Exception as e:
+        logger.error(
+            f"Failed to sample frames from segment [{start:.1f}s-{end:.1f}s]: {e}"
+        )
+        return []
+
+
+async def _caption_frame(
+    frame_info: Dict[str, Any], semaphore: asyncio.Semaphore
+) -> Optional[str]:
+    frame_path = frame_info["path"]
+    timestamp = frame_info["ts"]
+
+    async with semaphore:
+        try:
+            with metrics.measure_operation(
+                "frame_vision_analysis", video_ts=timestamp, frame_path=frame_path
+            ):
+                labels = await asyncio.to_thread(classify_image, frame_path)
+
+            if isinstance(labels, list):
+                # priority: summary > caption > top label
+                summary_item = next(
+                    (x for x in labels if x.get("category") == "summary"), None
+                )
+                caption_item = next(
+                    (x for x in labels if x.get("category") == "caption"), None
+                )
+                if summary_item:
+                    return f"[{timestamp:.1f}s] {summary_item['label']}"
+                if caption_item:
+                    return f"[{timestamp:.1f}s] Caption: {caption_item['label']}"
+                if labels:
+                    return (
+                        f"[{timestamp:.1f}s] Classification: "
+                        f"{labels[0].get('label', 'unknown')}"
+                    )
+        except Exception as e:
+            logger.warning(f"Vision analysis failed for frame at {timestamp:.1f}s: {e}")
+
+    return None
+
+
+async def _ocr_frame(
+    frame_info: Dict[str, Any], semaphore: asyncio.Semaphore
+) -> Optional[Tuple[float, str]]:
+    frame_path = frame_info["path"]
+    timestamp = frame_info["ts"]
+
+    async with semaphore:
+        try:
+            with metrics.measure_operation(
+                "frame_ocr_analysis", video_ts=timestamp, frame_path=frame_path
+            ):
+                ocr_text = await asyncio.to_thread(run_ocr, frame_path)
+
+            if ocr_text and ocr_text.strip():
+                cleaned_text = ocr_text.strip()
+                return (timestamp, cleaned_text)
+        except Exception as e:
+            logger.warning(f"OCR analysis failed for frame at {timestamp:.1f}s: {e}")
+
+    return None
+
+
+async def gather_evidence(frame_infos: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Gather evidence from sampled frames using vision and OCR.
+
+    Args:
+        frame_infos: List of frame info dicts from sample_frames()
+
+    Returns:
+        Dict with 'captions', 'ocr', 'num_frames' keys
+    """
+    captions_parts = []
+    ocr_parts = []
+    num_frames = len(frame_infos)
+
+    ocr_max_inflight = int(os.getenv("OCR_MAX_INFLIGHT", "2"))
+    ocr_sem = asyncio.Semaphore(max(1, ocr_max_inflight))
+    ocr_tasks = [
+        asyncio.create_task(_ocr_frame(frame_info, ocr_sem))
+        for frame_info in frame_infos
+    ]
+
+    # Use GPU guard for vision analysis when analyzing multiple frames
+    async with gpu_guard(f"vision_analysis_{num_frames}_frames"):
+        # Vision analysis: send multiple frames concurrently (bounded)
+        max_inflight = int(os.getenv("QWEN_VLLM_MAX_INFLIGHT", "2"))
+        caption_sem = asyncio.Semaphore(max(1, max_inflight))
+        caption_tasks = [
+            asyncio.create_task(_caption_frame(frame_info, caption_sem))
+            for frame_info in frame_infos
+        ]
+        if caption_tasks:
+            caption_results = await asyncio.gather(*caption_tasks)
+            for caption in caption_results:
+                if caption:
+                    captions_parts.append(caption)
+
+    if ocr_tasks:
+        ocr_results = await asyncio.gather(*ocr_tasks)
+        ocr_pairs = [result for result in ocr_results if result]
+        for timestamp, text in sorted(ocr_pairs, key=lambda item: item[0]):
+            ocr_parts.append(f"[{timestamp:.1f}s] {text}")
+
+    # Apply text hygiene: dedupe and cap length
+    captions_text = _apply_text_hygiene(captions_parts, max_chars=1500)
+    ocr_text = _apply_text_hygiene(ocr_parts, max_chars=1500)
+
+    return {"captions": captions_text, "ocr": ocr_text, "num_frames": num_frames}
+
+
+def segment_transcript(
+    full_text: str, word_timestamps: List[Tuple[str, float]], start: float, end: float
+) -> str:
+    """
+    Extract transcript text for a specific segment using word timestamps.
+
+    Args:
+        full_text: Complete transcript text
+        word_timestamps: List of (word, timestamp) tuples
+        start: Segment start time
+        end: Segment end time
+
+    Returns:
+        Transcript text for the segment, trimmed to reasonable length
+    """
+    if not word_timestamps:
+        # Fallback: use proportional text based on time
+        if not full_text:
+            logger.info(
+                f"No transcript available for segment [{start:.1f}s-{end:.1f}s]"
+            )
+            return ""
+
+        # This is a rough approximation - not ideal but better than nothing
+        logger.info(
+            f"Using approximate proportional slicing for segment [{start:.1f}s-{end:.1f}s] - word timestamps unavailable"
+        )
+        duration_ratio = min(1.0, (end - start) / 300.0)  # Assume 5min max video
+        text_len = len(full_text)
+        start_char = int((start / 300.0) * text_len)
+        end_char = int(start_char + (duration_ratio * text_len))
+
+        segment_text = full_text[start_char:end_char]
+    else:
+        # Use word timestamps to extract precise segment
+        logger.debug(
+            f"Using word-level timestamps for precise segment extraction [{start:.1f}s-{end:.1f}s]"
+        )
+        segment_words = []
+        for word, timestamp in word_timestamps:
+            if start <= timestamp <= end:
+                segment_words.append(word)
+
+        segment_text = " ".join(segment_words)
+        logger.debug(f"Extracted {len(segment_words)} words from segment")
+
+    # Trim to reasonable length (500-1000 chars as per spec)
+    if len(segment_text) > 1000:
+        segment_text = segment_text[:1000] + "..."
+
+    return segment_text
+
+
+def transcribe_clip(video_path: str, start: float, end: float) -> str:
+    """
+    Transcribe a specific clip of video by extracting audio and using WhisperX.
+
+    Args:
+        video_path: Path to video file
+        start: Clip start time
+        end: Clip end time
+
+    Returns:
+        Transcript text for the clip, trimmed to ~1000 chars
+    """
+    try:
+        # First check if we have cached full transcription
+        video_dir = Path(video_path).parent
+        transcript_file = video_dir / "transcript.json"
+
+        if transcript_file.exists():
+            with open(transcript_file, "r") as f:
+                transcript_data = json.load(f)
+                full_text = transcript_data.get("full_text", "")
+                word_timestamps = transcript_data.get("word_timestamps", [])
+                return segment_transcript(full_text, word_timestamps, start, end)
+
+        # If no cached transcript, extract and transcribe audio clip
+        logger.info(f"Extracting and transcribing audio clip [{start:.1f}s-{end:.1f}s]")
+
+        # Get ffmpeg binary path from environment
+        ffmpeg_binary = os.getenv("FFMPEG_BINARY", "ffmpeg")
+
+        # Create audio clips directory
+        audio_clips_dir = video_dir / "audio_clips"
+        audio_clips_dir.mkdir(exist_ok=True)
+
+        # Generate clip filename
+        start_ms = int(start * 1000)
+        end_ms = int(end * 1000)
+        clip_filename = f"clip_{start_ms}_{end_ms}.wav"
+        clip_path = audio_clips_dir / clip_filename
+
+        # Check if clip already exists
+        if not clip_path.exists():
+            # Extract audio clip using ffmpeg
+            import subprocess
+
+            cmd = [
+                ffmpeg_binary,
+                "-i",
+                str(video_path),
+                "-ss",
+                str(start),
+                "-t",
+                str(end - start),
+                "-vn",  # No video
+                "-acodec",
+                "pcm_s16le",  # WAV format
+                "-ar",
+                "16000",  # 16kHz sample rate (good for speech recognition)
+                "-ac",
+                "1",  # Mono
+                "-y",  # Overwrite if exists
+                str(clip_path),
+            ]
+
+            try:
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=30, check=True
+                )
+                logger.debug(
+                    f"FFmpeg extraction successful for clip [{start:.1f}s-{end:.1f}s]"
+                )
+            except subprocess.TimeoutExpired:
+                logger.error(
+                    f"FFmpeg timeout extracting clip [{start:.1f}s-{end:.1f}s]"
+                )
+                return _fallback_transcript_extraction(video_path, start, end)
+            except subprocess.CalledProcessError as e:
+                logger.error(
+                    f"FFmpeg failed extracting clip [{start:.1f}s-{end:.1f}s]: {e.stderr}"
+                )
+                return _fallback_transcript_extraction(video_path, start, end)
+            except FileNotFoundError:
+                logger.error(f"FFmpeg binary not found: {ffmpeg_binary}")
+                return _fallback_transcript_extraction(video_path, start, end)
+
+        # Transcribe the audio clip with WhisperX
+        if clip_path.exists() and clip_path.stat().st_size > 0:
+            try:
+                from ...tools.transcription import transcribe_whole_video
+
+                # Use GPU guard and metrics for transcription
+                with metrics.measure_operation(
+                    "clip_transcription",
+                    video_path=video_path,
+                    start=start,
+                    end=end,
+                    clip_duration=end - start,
+                ):
+                    # Note: transcribe_whole_video can handle audio files too
+                    clip_transcript = transcribe_whole_video(str(clip_path))
+
+                if clip_transcript and "full_text" in clip_transcript:
+                    clip_text = clip_transcript["full_text"]
+
+                    # Trim to reasonable length (~1000 chars)
+                    if len(clip_text) > 1000:
+                        clip_text = clip_text[:1000] + "..."
+
+                    logger.info(
+                        f"Successfully transcribed clip [{start:.1f}s-{end:.1f}s]: {len(clip_text)} chars"
+                    )
+                    return clip_text
+                else:
+                    logger.warning(
+                        f"WhisperX returned empty transcript for clip [{start:.1f}s-{end:.1f}s]"
+                    )
+                    return ""
+
+            except Exception as e:
+                logger.error(
+                    f"WhisperX transcription failed for clip [{start:.1f}s-{end:.1f}s]: {e}"
+                )
+                return _fallback_transcript_extraction(video_path, start, end)
+        else:
+            logger.error(
+                f"Audio clip extraction failed - file not created or empty: {clip_path}"
+            )
+            return _fallback_transcript_extraction(video_path, start, end)
+
+    except Exception as e:
+        logger.error(f"Failed to transcribe clip [{start:.1f}s-{end:.1f}s]: {e}")
+        return _fallback_transcript_extraction(video_path, start, end)
+
+
+def _fallback_transcript_extraction(video_path: str, start: float, end: float) -> str:
+    """
+    Fallback method for transcript extraction when ffmpeg or WhisperX fails.
+
+    Args:
+        video_path: Path to video file
+        start: Clip start time
+        end: Clip end time
+
+    Returns:
+        Best-effort transcript text or empty string
+    """
+    try:
+        # Try to use cached DB transcript if available
+        logger.info(
+            f"Using fallback transcript extraction for [{start:.1f}s-{end:.1f}s]"
+        )
+
+        video_dir = Path(video_path).parent
+        transcript_file = video_dir / "transcript.json"
+
+        if transcript_file.exists():
+            with open(transcript_file, "r") as f:
+                transcript_data = json.load(f)
+                full_text = transcript_data.get("full_text", "")
+                word_timestamps = transcript_data.get("word_timestamps", [])
+                return segment_transcript(full_text, word_timestamps, start, end)
+
+        # Last resort: return empty string
+        logger.warning(
+            f"No fallback transcript available for [{start:.1f}s-{end:.1f}s]"
+        )
+        return ""
+
+    except Exception as e:
+        logger.error(
+            f"Fallback transcript extraction failed for [{start:.1f}s-{end:.1f}s]: {e}"
+        )
+        return ""
+
+
+def llm_decide(
+    audio_text: str,
+    ocr_text: str,
+    captions_text: str,
+    llm: SafetyLLM,
+    timeout_sec: float = 30.0,
+    segment_info: str = "unknown",
+) -> Dict[str, Any]:
+    """
+    Use LLM to make harm decision based on multimodal evidence.
+
+    Args:
+        audio_text: Transcript text from segment
+        ocr_text: OCR text from frames
+        captions_text: Image captions/classifications from frames
+        llm: SafetyLLM instance
+
+    Returns:
+        Dict with is_harmful, confidence, categories, explanation
+    """
+    # Normalize evidence with explicit placeholders (closer to qwenvl_gpt5_analysis prompt)
+    audio_block = (audio_text or "").strip() or "No audio transcript available"
+    ocr_block = (ocr_text or "").strip() or "No OCR text detected"
+    captions_block = (captions_text or "").strip() or "No image descriptions available"
+
+    prompt = f"""You are an advanced video content safety analyst.
+Analyze the following multimodal evidence from a video segment:
+
+AUDIO TRANSCRIPT:
+{audio_block}
+
+OCR TEXT:
+{ocr_block}
+
+IMAGE DESCRIPTIONS / VISUAL EVIDENCE:
+{captions_block}
+
+Determine if this video segment contains harmful, unsafe, offensive, discriminatory, or inappropriate content.
+Safety criteria to check:
+1. Hate Symbols, Hate Groups & Extremism: Nazi symbols (swastikas, SS insignias, Nazi uniforms/banners), white supremacist imagery, extremist/terrorist organizations or propaganda.
+2. Persecution, Discrimination & Harassment: Targeting, rounding up, abusing, or harassing ethnic, religious, or minority groups.
+3. Violence, Physical Harm & Dangerous Acts: Physical assault, weapons violence, civilian harm.
+4. Hate Speech & Slurs: Derogatory slurs, dehumanizing language, incitement to hatred.
+
+If hate symbols, Nazi imagery, persecution, violence, or hate speech are depicted or discussed, classify pred_is_harmful as true.
+
+Respond with a JSON object containing:
+- pred_is_harmful: boolean (true if harmful/sensitive content is present, false only if completely safe)
+- confidence: float between 0.0 and 1.0
+- explanation: string (concise explanation of why the content is safe or harmful)
+- harm_categories: list of 1-3 relevant categories (e.g. ["Hate Symbols", "Persecution", "Extremism"])
+- factor_weights: object with percentage contributions; keys 'visual', 'audio', 'text' (each 0-100)
+
+Only return valid JSON without any additional text."""
+
+    def _normalize_factor_weights(raw: Any) -> Optional[Dict[str, float]]:
+        """
+        Normalize modality weights from the LLM response.
+        Expected keys: visual, audio, text. Values should be 0-100.
+        """
+        try:
+            if raw is None:
+                return None
+            # If the provider returns a JSON string, parse it
+            if isinstance(raw, str):
+                import json
+                raw = json.loads(raw)
+            if not isinstance(raw, dict):
+                return None
+            weights: Dict[str, float] = {}
+            for key in ("visual", "audio", "text"):
+                val = raw.get(key)
+                try:
+                    num = float(val)
+                except (TypeError, ValueError):
+                    continue
+                weights[key] = max(0.0, min(100.0, num))
+            return weights or None
+        except Exception:
+            return None
+
+    try:
+        # Call LLM with logprobs enabled and provider-level timeout
+        result = llm.invoke(
+            prompt,
+            timeout=int(timeout_sec),
+            logprobs=True,
+            top_logprobs=5,
+        )
+
+        if isinstance(result, dict):
+            # Check for provider-level error
+            if "error" in result:
+                logger.warning(
+                    f"LLM provider error for segment {segment_info}: {result['error']}"
+                )
+                # Continue with fallback response below
+            else:
+                # Validate and normalize result
+                categories = result.get("harm_categories", [])
+                if not isinstance(categories, list):
+                    categories = []
+
+                # Mathematical calibration from token logprobs (with fallback to prompt confidence)
+                calibrator = ConfidenceCalibrator()
+                cal_data = calibrator.extract_and_calibrate(
+                    result,
+                    fallback_confidence=float(result.get("confidence", 0.5))
+                )
+                calibrated_conf = cal_data["confidence"]
+                raw_conf = cal_data["raw_confidence"]
+                cal_source = cal_data["calibration_source"]
+
+                # Decision rule: true if flagged by LLM or calibrated prob >= 0.5 with category evidence
+                is_harmful = bool(
+                    result.get("pred_is_harmful", False)
+                    or result.get("is_harmful", False)
+                    or result.get("harmful", False)
+                    or (len(categories) > 0 and calibrated_conf >= 0.5)
+                )
+
+                explanation = str(
+                    result.get("explanation", "")
+                    or result.get("rationale", "")
+                    or result.get("reason", "")
+                    or result.get("justification", "")
+                )
+
+                factor_weights = _normalize_factor_weights(result.get("factor_weights"))
+
+                logger.debug(
+                    f"LLM decision for segment {segment_info}: harmful={is_harmful}, "
+                    f"confidence={calibrated_conf:.3f} (raw={raw_conf:.3f}, source={cal_source})"
+                )
+
+                return {
+                    "is_harmful": is_harmful,
+                    "confidence": calibrated_conf,
+                    "raw_confidence": raw_conf,
+                    "logit_z": cal_data.get("logit_z"),
+                    "calibration_source": cal_source,
+                    "categories": categories,
+                    "explanation": explanation,
+                    "factor_weights": factor_weights,
+                    "_token_usage": result.get("_token_usage"),
+                    "_logprobs": result.get("_logprobs"),
+                }
+        else:
+            logger.error(
+                f"LLM returned non-dict result for segment {segment_info}: {type(result)}"
+            )
+
+    except Exception as e:
+        logger.error(f"LLM decision failed for segment {segment_info}: {e}")
+
+    # Fallback for any errors
+    return {
+        "is_harmful": False,
+        "confidence": 0.0,
+        "raw_confidence": 0.0,
+        "calibration_source": "error_fallback",
+        "categories": [],
+        "explanation": "Analysis failed - assuming safe",
+    }
+
+
+def format_timestamp(seconds: float) -> str:
+    """Convert seconds to HH:MM:SS.mmm format."""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = seconds % 60
+    return f"{hours:02d}:{minutes:02d}:{secs:06.3f}"
+
+
+async def analyze_segments( # combines transcription, ocr and caption, gives to llm and checks if harmful
+
+#segment_transcript
+#sample_frames
+#gather_evidence
+#llm_decide
+
+    video_id: str,
+    video_path: str,
+    segments: List[Dict[str, float]],
+    cfg: SegmentationConfig,
+    llm: SafetyLLM,
+    full_text: str = None,
+    word_timestamps: List[Tuple[str, float]] = None,
+    planning_mode: str = "segmentation",
+) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+    """
+    Analyze video segments and return harmful events.
+
+    Args:
+        video_id: Video UUID
+        video_path: Path to video file
+        segments: List of segment dicts with 'start' and 'end' keys
+        cfg: Analysis configuration
+        llm: SafetyLLM instance
+        full_text: Optional full transcript text
+        word_timestamps: Optional word-level timestamps
+        planning_mode: Analysis planning mode (segmentation, llm, hybrid)
+
+    Returns:
+        Tuple of (harmful_events_list, aggregated_token_usage_dict)
+    """
+    logger.info(f"Analyzing {len(segments)} segments for video {video_id}")
+    logger.info(f"Planning mode: {planning_mode}, Suspicion mode: {cfg.suspicion_mode}")
+    logger.info(
+        f"Safe sampling: {cfg.seg_safe_sample_sec}s, Suspicious sampling: {cfg.seg_suspicious_sample_sec}s"
+    )
+
+    # Load LLM planner configuration
+    planner_cfg = LLMPlannerConfig.from_env()
+    planner_cfg.validate()
+    # Log LLM budgets after config is initialized
+    logger.info(
+        f"LLM budgets: suspicion={planner_cfg.suspicion_llm_max_segments} segments, "
+        f"planning={planner_cfg.planner_llm_max_points} points, "
+        f"extra_frames={planner_cfg.planner_max_extra_frames}"
+    )
+
+    # Track budgets for LLM-based features
+    suspicion_llm_calls = 0  # Track suspicion LLM calls per video
+    planned_points_total = 0  # Track total planned points per video
+
+    harmful_events = []
+    total_tokens = {"prompt_tokens": 0, "completion_tokens": 0}
+
+    two_pass_enabled = os.getenv("SEG_TWO_PASS_ENABLED", "false").lower() == "true"
+    probe_frames = int(os.getenv("SEG_PROBE_FRAMES", "3"))
+    # When visual evidence is prioritized (sparse transcript or visual probe hits),
+    # use this cadence for periodic timestamps.
+    visual_priority_interval_sec = float(os.getenv("SEG_VISUAL_PRIORITY_SAMPLE_SEC", "2.0"))
+
+    if two_pass_enabled:
+        logger.info(
+            "Two-pass sampling enabled: "
+            f"probe_frames={probe_frames} "
+            f"visual_priority_interval_sec={visual_priority_interval_sec:.2f}s "
+            f"max_frames_per_segment={cfg.max_frames_per_segment}"
+        )
+
+    for i, segment in enumerate(segments):
+        start = segment["start"]
+        end = segment["end"]
+        segment_start_time = time.time()
+
+        logger.info(
+            f"Processing segment {i + 1}/{len(segments)}: [{start:.1f}s-{end:.1f}s]"
+        )
+
+        try:
+            # 1. Get transcript for this segment
+            if full_text is not None and word_timestamps is not None:
+                segment_text = segment_transcript( # get transcript for each segment
+                    full_text, word_timestamps, start, end
+                )
+            else:
+                segment_text = transcribe_clip(video_path, start, end)
+
+            # 2. Score suspicion with LLM planner integration (pre-check budget)
+            current_suspicion_mode = cfg.suspicion_mode
+            if (
+                cfg.suspicion_mode == "llm"
+                and suspicion_llm_calls >= planner_cfg.suspicion_llm_max_segments
+            ):
+                current_suspicion_mode = "keywords"  # Use keywords if budget exhausted
+                logger.debug(
+                    f"Using keywords for segment {i} due to LLM budget ({suspicion_llm_calls}/{planner_cfg.suspicion_llm_max_segments})"
+                )
+
+            suspicion_result = score_suspicion(
+                segment_text, current_suspicion_mode, planner_cfg, video_id, i, llm=llm
+            )
+
+            # Handle LLM suspicion budget enforcement
+            if (
+                cfg.suspicion_mode == "llm"
+                and suspicion_result.get("method") == "llm"
+                and not suspicion_result.get("_cache_hit", False)
+            ):
+                suspicion_llm_calls += 1
+
+            # Pre-check budget for future segments to avoid unnecessary LLM calls
+            if (
+                cfg.suspicion_mode == "llm"
+                and suspicion_llm_calls >= planner_cfg.suspicion_llm_max_segments
+            ):
+                logger.info(
+                    f"LLM suspicion budget exhausted: used {suspicion_llm_calls}/{planner_cfg.suspicion_llm_max_segments}, switching to keywords for remaining segments"
+                )
+                # Override suspicion mode for remaining segments
+                cfg.suspicion_mode = "keywords"
+
+            is_suspicious = suspicion_result["suspicious"]
+            suspicion_method = str(suspicion_result.get("method", "unknown"))
+            try:
+                suspicion_confidence = float(suspicion_result.get("confidence", 0.0))
+            except Exception:
+                suspicion_confidence = 0.0
+
+            segment_duration = float(end - start)
+            transcript_sparse = _is_transcript_sparse(segment_text, segment_duration)
+            transcript_words = len((segment_text or "").split())
+            transcript_chars = len((segment_text or "").strip())
+            visual_probe_suspicious = False
+            visual_probe_reason = "disabled"
+            do_full_sampling = True
+            sampling_mode = "full"
+            sampling_interval_sec: Optional[float] = None
+            probe_sampled_frames = 0
+
+            # 3. Planning step: propose additional probe points if enabled
+            planned_timestamps = []
+            if (
+                planning_mode in ("llm", "hybrid")
+                and is_suspicious
+                and planned_points_total < planner_cfg.planner_llm_max_points
+            ):
+                try:
+                    with metrics.measure_operation(
+                        "llm_planner",
+                        video_id=video_id,
+                        segment_index=i,
+                        segment_start=start,
+                        segment_end=end,
+                    ):
+                        proposed_points = propose_points(
+                            segment_text, start, end, planner_cfg, video_id, i, llm=llm
+                        )
+
+                    # Apply budget constraints
+                    remaining_budget = (
+                        planner_cfg.planner_llm_max_points - planned_points_total
+                    )
+                    planned_timestamps = proposed_points[:remaining_budget]
+                    planned_points_total += len(planned_timestamps)
+
+                    if planned_timestamps:
+                        logger.info(
+                            f"LLM planner proposed {len(planned_timestamps)} points for segment [{start:.1f}s-{end:.1f}s]"
+                        )
+
+                except Exception as e:
+                    logger.warning(
+                        f"LLM planner failed for segment [{start:.1f}s-{end:.1f}s]: {e}"
+                    )
+
+            # 4. Generate sampling timestamps (periodic + optional LLM points)
+            if two_pass_enabled:
+                probe_timestamps = _build_probe_timestamps(start, end, probe_frames)
+
+                # Decide whether to do a cheap probe-only pass or a full pass.
+                # - If transcript is suspicious OR transcript is sparse => go straight to full sampling.
+                # - Else, run probe (caption+OCR), and escalate to full if probe looks suspicious.
+                do_full_sampling = bool(is_suspicious or transcript_sparse)
+                visual_probe_reason = "not_evaluated"
+
+                probe_evidence: Optional[Dict[str, Any]] = None
+                if not do_full_sampling:
+                    probe_frame_infos = sample_frames( # calls extract_frames
+                        video_path,
+                        start,
+                        end,
+                        cfg.seg_safe_sample_sec,
+                        max(1, probe_frames),
+                        timestamps=probe_timestamps,
+                    )
+                    if probe_frame_infos:
+                        probe_sampled_frames = len(probe_frame_infos)
+                        probe_evidence = await gather_evidence(probe_frame_infos) # analyze those frames with ocr and vlm
+                        visual_probe_suspicious, visual_probe_reason = _score_visual_probe_suspicion(
+                            probe_evidence.get("captions"), probe_evidence.get("ocr")
+                        )
+                        if visual_probe_suspicious:
+                            logger.info(
+                                "Probe escalation triggered: "
+                                f"video_id={video_id} seg={i + 1} span=[{start:.1f}-{end:.1f}] "
+                                f"reason={visual_probe_reason}"
+                            )
+                            do_full_sampling = True
+                    else:
+                        # No probe frames available; fall back to full sampling to avoid blind spots.
+                        do_full_sampling = True
+                        visual_probe_reason = "no_probe_frames"
+
+                if do_full_sampling:
+                    # Select cadence: transcript sparse and/or visual-probe suspicious should bias toward
+                    # denser visual sampling than the safe cadence.
+                    if transcript_sparse or visual_probe_suspicious:
+                        interval = visual_priority_interval_sec
+                    else:
+                        interval = cfg.seg_suspicious_sample_sec if is_suspicious else cfg.seg_safe_sample_sec
+                    sampling_interval_sec = float(interval)
+
+                    # Generate periodic timestamps
+                    periodic_timestamps: List[float] = []
+                    current = start
+                    while (
+                        current < end and len(periodic_timestamps) < cfg.max_frames_per_segment
+                    ):
+                        periodic_timestamps.append(current)
+                        current += interval
+
+                    # Merge with planned timestamps if any
+                    if planned_timestamps:
+                        remaining_points_budget = (
+                            planner_cfg.planner_llm_max_points - planned_points_total
+                        )
+                        periodic_timestamps = merge_timestamps_with_planning(
+                            periodic_timestamps,
+                            planned_timestamps,
+                            planner_cfg,
+                            max_frames_per_segment=cfg.max_frames_per_segment,
+                            remaining_points_budget=remaining_points_budget,
+                        )
+
+                    # Always include probe timestamps in the full sampling set for coverage.
+                    # Because sample_frames applies a cap by list order, we must select
+                    # up to cap timestamps while guaranteeing probe points are kept.
+                    probe_set = {ts for ts in probe_timestamps if start <= ts <= end}
+                    selected: List[float] = []
+                    for ts in sorted(probe_set):
+                        selected.append(ts)
+
+                    for ts in periodic_timestamps:
+                        if ts in probe_set:
+                            continue
+                        if not (start <= ts <= end):
+                            continue
+                        selected.append(ts)
+                        if len(selected) >= cfg.max_frames_per_segment:
+                            break
+
+                    merged = sorted(set(selected))
+
+                    # 5. Sample frames using merged timestamps
+                    frame_infos = sample_frames(
+                        video_path,
+                        start,
+                        end,
+                        interval,
+                        cfg.max_frames_per_segment,
+                        timestamps=merged,
+                    )
+
+                    if not frame_infos:
+                        logger.warning(
+                            f"No frames sampled for segment [{start:.1f}s-{end:.1f}s], skipping"
+                        )
+                        continue
+
+                    # 6. Gather evidence from frames (async with GPU guard)
+                    evidence = await gather_evidence(frame_infos)
+                    sampling_mode = "full"
+                else:
+                    # Probe-only evidence (caption + OCR) is used as the segment evidence.
+                    evidence = probe_evidence or {"captions": "", "ocr": "", "num_frames": 0}
+                    sampling_mode = "probe"
+            else:
+                interval = (
+                    cfg.seg_suspicious_sample_sec
+                    if is_suspicious
+                    else cfg.seg_safe_sample_sec
+                )
+                sampling_interval_sec = float(interval)
+
+                # Generate periodic timestamps
+                periodic_timestamps = []
+                current = start
+                while (
+                    current < end and len(periodic_timestamps) < cfg.max_frames_per_segment
+                ):
+                    periodic_timestamps.append(current)
+                    current += interval
+
+                # Merge with planned timestamps if any
+                if planned_timestamps:
+                    remaining_points_budget = (
+                        planner_cfg.planner_llm_max_points - planned_points_total
+                    )
+                    final_timestamps = merge_timestamps_with_planning(
+                        periodic_timestamps,
+                        planned_timestamps,
+                        planner_cfg,
+                        max_frames_per_segment=cfg.max_frames_per_segment,
+                        remaining_points_budget=remaining_points_budget,
+                    )
+                else:
+                    final_timestamps = periodic_timestamps
+
+                # 5. Sample frames using final timestamps
+                frame_infos = sample_frames(
+                    video_path,
+                    start,
+                    end,
+                    interval,
+                    cfg.max_frames_per_segment,
+                    timestamps=final_timestamps,
+                )
+
+                if not frame_infos:
+                    logger.warning(
+                        f"No frames sampled for segment [{start:.1f}s-{end:.1f}s], skipping"
+                    )
+                    continue
+
+                # 6. Gather evidence from frames (async with GPU guard)
+                evidence = await gather_evidence(frame_infos)
+                sampling_mode = "full"
+
+            _log_sampling_decision(
+                video_id=video_id,
+                seg_index=i,
+                start=start,
+                end=end,
+                sampling_mode=sampling_mode,
+                num_frames=int(evidence.get("num_frames", 0) or 0),
+                interval_sec=sampling_interval_sec,
+                transcript_words=transcript_words,
+                transcript_chars=transcript_chars,
+                transcript_sparse=bool(transcript_sparse),
+                suspicion_method=suspicion_method,
+                suspicion_confidence=suspicion_confidence,
+                is_suspicious=bool(is_suspicious),
+                planned_points=len(planned_timestamps) if planned_timestamps else 0,
+                probe_frames=int(probe_frames),
+                probe_sampled_frames=int(probe_sampled_frames),
+                visual_probe_suspicious=bool(visual_probe_suspicious),
+                visual_probe_reason=str(visual_probe_reason),
+            )
+
+            # 7. LLM decision with metrics
+            segment_info = f"[{start:.1f}s-{end:.1f}s]"
+
+            with metrics.measure_operation(
+                "llm_decision",
+                video_id=video_id,
+                segment_index=i,
+                segment_start=start,
+                segment_end=end,
+            ):
+                decision = llm_decide( # gives the LLM all three evidence sources and asks whether the segment contains harmful/sensitive content.
+                    segment_text,
+                    evidence["ocr"],
+                    evidence["captions"],
+                    llm,
+                    timeout_sec=cfg.seg_llm_timeout_sec,
+                    segment_info=segment_info,
+                )
+
+            # 8. Create harmful event if LLM says it's harmful
+            if decision["is_harmful"]:
+                # Determine which analysis types were performed
+                analysis_performed = ["frame_extraction", "audio_analysis"]
+
+                if evidence["captions"]:
+                    # Check if it looks like BLIP captions or CLIP classifications
+                    if "Caption:" in evidence["captions"]:
+                        analysis_performed.append("image_captioning")
+                    else:
+                        analysis_performed.append("image_classification")
+
+                if evidence["ocr"]:
+                    analysis_performed.append("ocr")
+
+                harmful_event = {
+                    "segment_start": format_timestamp(start),
+                    "segment_end": format_timestamp(end),
+                    "analysis_mode": "region",
+                    "num_frames": evidence["num_frames"],
+                    "analysis_performed": analysis_performed,
+                    "audio_evidence": segment_text,
+                    "analysis_data": {
+                        "is_harmful": True,
+                        "needs_verification": False,
+                        "confidence": int(
+                            decision["confidence"] * 100
+                        ),  # Scale to 0-100
+                        "explanation": decision["explanation"],
+                        "categories": decision["categories"],
+                        "factor_weights": decision.get("factor_weights"),
+                        "suspicion_method": suspicion_result.get("method", "unknown"),
+                        "planning_mode": planning_mode,
+                        "planned_points": len(planned_timestamps)
+                        if planned_timestamps
+                        else 0,
+                        "transcript_sparse": transcript_sparse,
+                        "visual_probe_suspicious": visual_probe_suspicious,
+                        "visual_probe_reason": visual_probe_reason,
+                        "sampling_mode": "full" if do_full_sampling else "probe",
+                    },
+                }
+
+                harmful_events.append(harmful_event)
+                logger.info(
+                    f"Harmful content detected in segment [{start:.1f}s-{end:.1f}s]: {decision['categories']}"
+                )
+            else:
+                logger.info(f"Segment [{start:.1f}s-{end:.1f}s] deemed safe")
+
+            # Log segment metrics if enabled
+            segment_end_time = time.time()
+            segment_latency_ms = int((segment_end_time - segment_start_time) * 1000)
+
+            # Extract token usage from decision if available
+            tokens_used = decision.get("_token_usage")
+
+            # Aggregate token usage for analysis run tracking
+            if tokens_used:
+                total_tokens["prompt_tokens"] += tokens_used.get("prompt_tokens", 0)
+                total_tokens["completion_tokens"] += tokens_used.get(
+                    "completion_tokens", 0
+                )
+
+            # Log LLM suspicion metrics if applicable
+            if suspicion_result.get("method") == "llm" and not suspicion_result.get(
+                "_cache_hit", True
+            ):
+                with metrics.measure_operation(
+                    "llm_suspicion",
+                    video_id=video_id,
+                    segment_index=i,
+                    suspicious=suspicion_result["suspicious"],
+                    confidence=suspicion_result["confidence"],
+                    cache_hit=suspicion_result.get("_cache_hit", False),
+                    latency_ms=suspicion_result.get("_latency_ms", 0),
+                ):
+                    pass  # The operation was already completed above
+
+            # Enhanced segment metrics with planning info
+            enhanced_decision = dict(decision)
+            enhanced_decision.update({
+                "suspicion_method": suspicion_result.get("method", "unknown"),
+                "suspicion_confidence": suspicion_result.get("confidence", 0.0),
+                "planning_mode": planning_mode,
+                "planned_points": len(planned_timestamps) if planned_timestamps else 0,
+                "total_timestamps": len(final_timestamps)
+                if "final_timestamps" in locals()
+                else len([]),
+            })
+
+            metrics.log_segment_metrics(
+                video_id=video_id,
+                segment_index=i,
+                segment_start=start,
+                segment_end=end,
+                latency_ms=segment_latency_ms,
+                num_frames=evidence["num_frames"],
+                suspicion_mode=cfg.suspicion_mode,
+                is_suspicious=is_suspicious,
+                decision=enhanced_decision,
+                tokens_used=tokens_used,
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to analyze segment [{start:.1f}s-{end:.1f}s]: {e}")
+            continue
+
+    logger.info(
+        f"Analysis complete: {len(harmful_events)} harmful events detected out of {len(segments)} segments"
+    )
+    logger.info(
+        f"Budget usage: LLM suspicion {suspicion_llm_calls}/{planner_cfg.suspicion_llm_max_segments}, planned points {planned_points_total}/{planner_cfg.planner_llm_max_points}"
+    )
+    logger.info(
+        f"Token usage: {total_tokens['prompt_tokens']} prompt + {total_tokens['completion_tokens']} completion = {total_tokens['prompt_tokens'] + total_tokens['completion_tokens']} total"
+    )
+    return harmful_events, total_tokens
