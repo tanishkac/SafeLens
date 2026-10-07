@@ -23,7 +23,8 @@ C. Fallback & Prompt Bounds Clamping
 When using third-party free router endpoints where logprobs are omitted upstream, the calibrator performs bound normalization: $$C_{\text{final}} = \min(1.0, \max(0.0, C_{\text{prompt}}))$$
 
 D. Decision Classification Threshold
-A segment is classified as harmful if: $$\text{is_harmful} = \text{True} \iff \Big(\text{LLM flag} = \text{True}\Big) \lor \Big(\text{len}(\text{categories}) > 0 ;\land; P_{\text{calibrated}} \ge 0.50\Big)$$
+A segment is classified as harmful if: $$\text{is\_harmful} = \text{True} \iff \big(\text{LLM flag} = \text{True}\big) \lor \big(\text{len}(\text{categories}) > 0 \land P_{\text{calibrated}} \ge 0.50\big)$$
+
 
 In your run, segments 1, 2, and 5 satisfied $P \ge 0.92 \gg 0.50$ with matching harm categories, properly qualifying them as verified harmful events.
 
@@ -59,7 +60,8 @@ Calculates suspicion confidence (suspicion_conf) for each segment using LLM prom
 
 web/services/reporting.py
 :
-Aggregates overall video confidence: $$\text{overall_confidence_score} = \text{round}\left(\frac{1}{N}\sum_{i=1}^{N} \text{confidence}_i\right)$$
+Aggregates overall video confidence: $$\text{overall\_confidence\_score} = \text{round}\left(\frac{1}{N}\sum_{i=1}^{N} \text{confidence}_i\right)$$
+
 
 
 web/services/persistence.py
