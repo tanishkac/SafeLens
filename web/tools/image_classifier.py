@@ -26,9 +26,12 @@ def _build_payload(data_url: str) -> Dict[str, Any]: # This constructs the reque
         "QWEN_VLLM_CAPTION_PROMPT",
         "Describe every visible element in this frame with maximum detail and objectivity. Include all people/objects/text/environment with precise appearance, position, color, and composition. Avoid guesses; only state what is literally visible.",
     )
+    base_url = os.getenv("QWEN_VLLM_BASE_URL", "http://localhost:8193/v1")
     model = os.getenv("QWEN_VLLM_MODEL", "Qwen/Qwen2.5-VL-7B-Instruct")
+    if "googleapis.com" in base_url and model.startswith("google/"):
+        model = model.replace("google/", "")
     temperature = float(os.getenv("QWEN_VLLM_TEMPERATURE", "0.1"))
-    max_tokens = int(os.getenv("QWEN_VLLM_MAX_TOKENS", "1024"))
+    max_tokens = int(os.getenv("QWEN_VLLM_MAX_TOKENS", "2048"))
     return {
         "model": model,
         "temperature": temperature, # Low temperature makes the output less random
@@ -45,26 +48,44 @@ def _build_payload(data_url: str) -> Dict[str, Any]: # This constructs the reque
     }
 
 
-def _post_chat_completions(payload: Dict[str, Any]) -> str: # Now the actual request gets sent to the model server.
+def _post_chat_completions(payload: Dict[str, Any]) -> str:
     base_url = os.getenv("QWEN_VLLM_BASE_URL", "http://localhost:8193/v1")
     api_key = os.getenv("QWEN_VLLM_API_KEY", None)
-    timeout = float(os.getenv("QWEN_VLLM_TIMEOUT_SEC", "20"))
+    timeout = float(os.getenv("QWEN_VLLM_TIMEOUT_SEC", "35"))
 
     url = base_url.rstrip("/") + "/chat/completions"
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
-    t0 = time.time()
-    resp = requests.post(url, json=payload, headers=headers, timeout=timeout) # request model
-    latency_ms = int((time.time() - t0) * 1000)
-    try:
-        resp.raise_for_status()
-    except Exception as e:
-        logger.warning(
-            f"Qwen HTTP caption request failed: status={resp.status_code} latency_ms={latency_ms} error={e}"
-        )
-        return "(caption unavailable)"
+    resp = None
+    for attempt in range(2):
+        t0 = time.time()
+        try:
+            resp = requests.post(url, json=payload, headers=headers, timeout=timeout)
+            latency_ms = int((time.time() - t0) * 1000)
+            resp.raise_for_status()
+            break
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as net_err:
+            latency_ms = int((time.time() - t0) * 1000)
+            if attempt == 0:
+                time.sleep(1.0)
+                timeout = max(timeout, 45.0)
+                continue
+            logger.warning(
+                f"VLM HTTP caption network timeout: latency_ms={latency_ms} error={net_err}"
+            )
+            return "(caption unavailable)"
+        except Exception as e:
+            latency_ms = int((time.time() - t0) * 1000)
+            status = resp.status_code if resp else "unknown"
+            if attempt == 0 and resp and resp.status_code in (429, 500, 502, 503, 504):
+                time.sleep(1.0)
+                continue
+            logger.warning(
+                f"VLM HTTP caption request failed: status={status} latency_ms={latency_ms} error={e}"
+            )
+            return "(caption unavailable)"
 
     try:
         data = resp.json()

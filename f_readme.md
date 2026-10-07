@@ -1,4 +1,95 @@
 https://openrouter.ai/workspaces/default/keys
+https://aistudio.google.com/api-keys
+
+-----------------------------------------------------
+
+Confidence Score Math Formula & Calculation
+The safety engine uses a multi-tier mathematical confidence system defined in 
+
+ConfidenceCalibrator
+:
+
+A. Token Log-Odds & Softmax Formulation
+When token log-probabilities are returned by the LLM provider, the raw logit $z$ is computed from the binary decision tokens: $$z = \ln p(\text{"true"}) - \ln p(\text{"false"})$$
+
+The uncalibrated raw probability is: $$P_{\text{raw}} = \sigma(z) = \frac{1}{1 + e^{-z}}$$
+
+B. Temperature & Platt Scaling Calibration
+To correct for LLM overconfidence on safety classifications, Platt scaling with temperature scaling is applied: $$P_{\text{calibrated}} = \sigma\left(\frac{z}{T} + b\right) = \frac{1}{1 + \exp\left(-\left(\frac{z}{T} + b\right)\right)}$$
+
+$T$: Temperature parameter ($T = 1.35$ by default)
+$b$: Platt bias intercept ($b = 0.0$ by default)
+C. Fallback & Prompt Bounds Clamping
+When using third-party free router endpoints where logprobs are omitted upstream, the calibrator performs bound normalization: $$C_{\text{final}} = \min(1.0, \max(0.0, C_{\text{prompt}}))$$
+
+D. Decision Classification Threshold
+A segment is classified as harmful if: $$\text{is_harmful} = \text{True} \iff \Big(\text{LLM flag} = \text{True}\Big) \lor \Big(\text{len}(\text{categories}) > 0 ;\land; P_{\text{calibrated}} \ge 0.50\Big)$$
+
+In your run, segments 1, 2, and 5 satisfied $P \ge 0.92 \gg 0.50$ with matching harm categories, properly qualifying them as verified harmful events.
+
+-----------------------------------------------------
+
+-----------------------------------------------------
+1. Mathematical Calibration & Core Calculation
+
+
+web/app/orchestration/calibrator.py
+:
+Core Implementation: Implements the 
+
+ConfidenceCalibrator
+ class.
+Mathematical Formula: $$\text{Log-odds logit: } z = \ln p(\text{"true"}) - \ln p(\text{"false"})$$ $$\text{Raw Probability: } P_{\text{raw}} = \sigma(z) = \frac{1}{1 + e^{-z}}$$ $$\text{Platt / Temperature Scaled: } P_{\text{calibrated}} = \sigma\left(\frac{z}{T} + b\right) = \frac{1}{1 + e^{-(z/T + b)}}$$
+Extracts token logprobs (_logprobs, top_logprobs) from LLM outputs and applies fallback heuristics if token probabilities are unavailable.
+2. Segment Analysis & Suspicion Scoring
+
+
+web/app/orchestration/segment_analyzer.py
+:
+Integrates ConfidenceCalibrator with multi-modal evidence (vision caption, audio transcript, OCR).
+Calculates multi-modal factor weights (factor_weights: visual %, audio %, text %).
+Normalizes segment confidence scores ($0 - 100%$).
+
+
+web/app/planning/llm_planner.py
+:
+Calculates suspicion confidence (suspicion_conf) for each segment using LLM prompt evaluation and keyword scoring against SUSPICION_LLM_CONF_THRESHOLD.
+3. Aggregation, Storage & API Serving
+
+
+web/services/reporting.py
+:
+Aggregates overall video confidence: $$\text{overall_confidence_score} = \text{round}\left(\frac{1}{N}\sum_{i=1}^{N} \text{confidence}_i\right)$$
+
+
+web/services/persistence.py
+:
+Saves segment confidence_score and video overall_confidence_score into the SQLite database.
+
+
+web/routers/videos.py
+:
+Serves confidence scores in /api/analyze/{video_id}/results and /api/user/videos.
+4. Frontend Clustering & UI Presentation
+
+
+web/frontend/src/utils/clustering.ts
+:
+Clusters adjacent events and computes cluster maxConfidence and avgConfidence.
+
+
+web/frontend/src/app/[videoId]/page.tsx
+:
+Normalizes $0-100$ backend confidence into $0.0-1.0$ format for the UI state.
+
+
+web/frontend/src/components/VidstackPlayer.tsx
+ & 
+
+InspectorPanel.tsx
+:
+Color-codes the video timeline and inspector tabs based on confidence thresholds (e.g. $\ge 90%$ Red, $\ge 70%$ Orange).
+-----------------------------------------------------
 
 # SafeLens: AI-Powered Hateful & Harmful Video Moderation
 

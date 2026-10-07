@@ -12,7 +12,7 @@ export default function Home() {
     const [isUploading, setIsUploading] = useState(false);
     const [uploadProgress, setUploadProgress] = useState(0);
     const [isNavigating, setIsNavigating] = useState(false);
-    const [selectedModel, setSelectedModel] = useState("openrouter/free");
+    const [selectedModel, setSelectedModel] = useState("google/gemini-flash-lite-latest");
     const router = useRouter();
 
 

@@ -1,5 +1,6 @@
 import os
 import json 
+import time
 import requests
 from typing import Dict, Any, Optional
 
@@ -42,9 +43,10 @@ class SafetyLLM:
             )
 
     def _init_openrouter_provider(self, api_key: Optional[str]):
-        """Initialize OpenRouter provider (existing implementation)"""
-        self.api_url = "https://openrouter.ai/api/v1/chat/completions"
-        self.api_key = api_key or os.getenv("OPENROUTER_API_KEY")
+        """Initialize OpenRouter or direct OpenAI-compatible provider (like Google AI Studio)"""
+        base_url = os.getenv("ANALYSIS_LLM_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
+        self.api_url = f"{base_url}/chat/completions"
+        self.api_key = api_key or os.getenv("ANALYSIS_LLM_API_KEY") or os.getenv("OPENROUTER_API_KEY") or os.getenv("GEMINI_API_KEY")
 
         if not self.api_key:
             return MockLLMProvider()
@@ -136,13 +138,18 @@ class OpenRouterProvider:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
-            "X-Title": "Video Safety Agent",
         }
+        if "openrouter.ai" in self.api_url:
+            headers["X-Title"] = "Video Safety Agent"
+
+        model_name = self.model
+        if "googleapis.com" in self.api_url and model_name.startswith("google/"):
+            model_name = model_name.replace("google/", "")
 
         effective_max_tokens = max(max_tokens, 2048)
 
         payload: Dict[str, Any] = {
-            "model": self.model,
+            "model": model_name,
             "messages": [
                 {
                     "role": "system",
@@ -155,37 +162,60 @@ class OpenRouterProvider:
             "response_format": {"type": "json_object"},
         }
 
-        if logprobs:
+        # Google AI Studio does not support logprobs/top_logprobs in its OpenAI-compatible endpoint
+        if logprobs and "googleapis.com" not in self.api_url:
             payload["logprobs"] = True
             if top_logprobs is not None:
                 payload["top_logprobs"] = top_logprobs
 
-        try:
-            effective_timeout = timeout if timeout is not None else self.timeout
-            response = requests.post(
-                self.api_url, headers=headers, json=payload, timeout=effective_timeout
-            )
+        effective_timeout = timeout if timeout is not None else self.timeout
 
-            if response.status_code != 200:
-                # If json_object format failed, retry once without it
-                if "response_format" in payload:
-                    retry_payload = {k: v for k, v in payload.items() if k != "response_format"}
+        response = None
+        for attempt in range(2):
+            try:
+                response = requests.post(
+                    self.api_url, headers=headers, json=payload, timeout=effective_timeout
+                )
+
+                if response.status_code != 200:
+                    # If json_object format or logprobs failed, retry with clean basic payload
+                    retry_payload = {
+                        k: v for k, v in payload.items() 
+                        if k not in ("response_format", "logprobs", "top_logprobs")
+                    }
                     retry_resp = requests.post(
                         self.api_url, headers=headers, json=retry_payload, timeout=effective_timeout
                     )
                     if retry_resp.status_code == 200:
                         response = retry_resp
                     else:
+                        if attempt == 0 and response.status_code in (429, 500, 502, 503, 504):
+                            time.sleep(1.5)
+                            continue
                         return {
                             "error": f"API error {response.status_code}: {response.text}",
                             "response": response.text,
                         }
-                else:
-                    return {
-                        "error": f"API error {response.status_code}: {response.text}",
-                        "response": response.text,
-                    }
+                break  # Successful 200 response
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as net_err:
+                if attempt == 0:
+                    time.sleep(1.5)
+                    effective_timeout = max(effective_timeout, 45)
+                    continue
+                return {
+                    "error": f"API connection error: {net_err}",
+                    "response": str(net_err),
+                }
+            except Exception as e:
+                return {
+                    "error": f"Unexpected API error: {e}",
+                    "response": str(e),
+                }
 
+        if response is None or response.status_code != 200:
+            return {"error": "Failed to get a response from API", "response": ""}
+
+        try:
             response_data = response.json()
             choice = response_data.get("choices", [{}])[0]
             msg = choice.get("message", {}) if isinstance(choice, dict) else {}

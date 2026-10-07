@@ -16,11 +16,13 @@ interface ModelSelectorProps {
 }
 
 const models = [
+    { value: "google/gemini-flash-lite-latest", label: "Gemini Flash Lite (Google AI Studio)" },
+    { value: "google/gemini-3.1-flash-lite", label: "Gemini 3.1 Flash Lite" },
+    { value: "google/gemini-3-flash-preview", label: "Gemini 3 Flash (Preview)" },
+    { value: "google/gemini-3.8-flash", label: "Gemini 3.8 Flash" },
     { value: "openrouter/free", label: "OpenRouter Free (Auto Vision/LLM)" },
     { value: "nvidia/nemotron-3.5-content-safety:free", label: "Nemotron Content Safety (Free)" },
     { value: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", label: "Nemotron Omni Reasoning (Free)" },
-    { value: "google/gemini-2.5-flash", label: "Gemini 2.5 Flash" },
-    { value: "google/gemini-3-flash-preview", label: "Gemini 3 Flash (Preview)" },
     { value: "openai/gpt-4o-mini", label: "GPT-4o Mini" },
     { value: "anthropic/claude-3.5-haiku", label: "Claude 3.5 Haiku" },
     { value: "meta-llama/llama-3.1-8b-instruct", label: "Llama 3.1 8B" },
@@ -42,7 +44,7 @@ export default function ModelSelector({ value, onModelChange }: ModelSelectorPro
                 Analysis Model:
             </Label>
             <Select
-                value={value || "openrouter/free"}
+                value={value || "google/gemini-flash-lite-latest"}
                 onValueChange={handleModelChange}
             >
                 <SelectTrigger id="model-selector" className="w-[200px]">
