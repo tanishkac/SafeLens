@@ -68,12 +68,22 @@ def _post_chat_completions(payload: Dict[str, Any]) -> str: # Now the actual req
 
     try:
         data = resp.json()
-        content = ( # vlm response
-            data.get("choices", [{}])[0]
-            .get("message", {})
-            .get("content", "")
-            .strip()
-        )
+        choice = data.get("choices", [{}])[0]
+        msg = choice.get("message", {}) if isinstance(choice, dict) else {}
+        content = msg.get("content")
+        if not content and msg.get("reasoning"):
+            content = msg.get("reasoning")
+        if isinstance(content, list):
+            text_parts = [
+                p.get("text", "")
+                for p in content
+                if isinstance(p, dict) and p.get("type") == "text"
+            ]
+            content = " ".join(text_parts)
+        elif not isinstance(content, str):
+            content = str(content or "")
+
+        content = content.strip()
         return content or "(caption unavailable)"
     except Exception as e:
         logger.warning(

@@ -139,6 +139,8 @@ class OpenRouterProvider:
             "X-Title": "Video Safety Agent",
         }
 
+        effective_max_tokens = max(max_tokens, 2048)
+
         payload: Dict[str, Any] = {
             "model": self.model,
             "messages": [
@@ -149,7 +151,7 @@ class OpenRouterProvider:
                 {"role": "user", "content": prompt},
             ],
             "temperature": temperature,
-            "max_tokens": max_tokens,
+            "max_tokens": effective_max_tokens,
             "response_format": {"type": "json_object"},
         }
 
@@ -186,12 +188,24 @@ class OpenRouterProvider:
 
             response_data = response.json()
             choice = response_data.get("choices", [{}])[0]
-            content = choice.get("message", {}).get("content", "")
+            msg = choice.get("message", {}) if isinstance(choice, dict) else {}
+            content = msg.get("content")
+            if not content and msg.get("reasoning"):
+                content = msg.get("reasoning")
+            if not isinstance(content, str):
+                content = str(content or "")
 
             try:
                 parsed_content = json.loads(content)
-            except json.JSONDecodeError:
-                cleaned = content.strip() if isinstance(content, str) else ""
+            except (json.JSONDecodeError, TypeError):
+                cleaned = content.strip()
+                # Strip <think>...</think> tags if present from reasoning models
+                if "<think>" in cleaned and "</think>" in cleaned:
+                    end_think = cleaned.rfind("</think>")
+                    cleaned = cleaned[end_think + len("</think>"):].strip()
+                elif "<think>" in cleaned:
+                    cleaned = cleaned.split("<think>", 1)[0].strip()
+
                 if cleaned.startswith("```"):
                     nl = cleaned.find("\n")
                     if nl != -1:
@@ -204,7 +218,13 @@ class OpenRouterProvider:
                 end = cleaned.rfind("}")
                 if start != -1 and end != -1 and end > start:
                     candidate = cleaned[start : end + 1]
-                    parsed_content = json.loads(candidate)
+                    try:
+                        parsed_content = json.loads(candidate)
+                    except Exception:
+                        return {
+                            "error": "Invalid JSON response from API",
+                            "response": content,
+                        }
                 else:
                     return {
                         "error": "Invalid JSON response from API",
