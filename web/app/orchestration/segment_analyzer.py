@@ -25,6 +25,7 @@ from ...tools.llm import SafetyLLM
 from ...tools.transcription import transcribe_whole_video
 from .segmentation_config import SegmentationConfig
 from .calibrator import ConfidenceCalibrator
+from ...services.policy_rag import retrieve_relevant_policies, format_retrieved_policies
 from ..planning.llm_planner import (
     LLMPlannerConfig,
     suspicion_score as llm_suspicion_score,
@@ -905,8 +906,19 @@ def llm_decide(
     ocr_block = (ocr_text or "").strip() or "No OCR text detected"
     captions_block = (captions_text or "").strip() or "No image descriptions available"
 
-    prompt = f"""You are an advanced video content safety analyst.
-Analyze the following multimodal evidence from a video segment:
+    # Retrieve applicable YouTube Community Guidelines using combined multimodal evidence
+    evidence_query = f"{audio_block}\n{ocr_block}\n{captions_block}".strip()
+    retrieved_policies = []
+    policies_text = "No policy guidelines retrieved."
+    try:
+        retrieved_policies = retrieve_relevant_policies(evidence_query, top_k=2)
+        if retrieved_policies:
+            policies_text = format_retrieved_policies(retrieved_policies)
+    except Exception as e:
+        logger.warning(f"Policy RAG retrieval failed for segment {segment_info}: {e}")
+
+    prompt = f"""You are a senior YouTube content moderation and compliance analyst.
+Analyze the following multimodal evidence from a video segment against official YouTube Community Guidelines:
 
 AUDIO TRANSCRIPT:
 {audio_block}
@@ -917,21 +929,22 @@ OCR TEXT:
 IMAGE DESCRIPTIONS / VISUAL EVIDENCE:
 {captions_block}
 
-Determine if this video segment contains harmful, unsafe, offensive, discriminatory, or inappropriate content.
-Safety criteria to check:
-1. Hate Symbols, Hate Groups & Extremism: Nazi symbols (swastikas, SS insignias, Nazi uniforms/banners), white supremacist imagery, extremist/terrorist organizations or propaganda.
-2. Persecution, Discrimination & Harassment: Targeting, rounding up, abusing, or harassing ethnic, religious, or minority groups.
-3. Violence, Physical Harm & Dangerous Acts: Physical assault, weapons violence, civilian harm.
-4. Hate Speech & Slurs: Derogatory slurs, dehumanizing language, incitement to hatred.
+APPLICABLE YOUTUBE POLICIES (OFFICIAL GUIDELINES):
+{policies_text}
 
-If hate symbols, Nazi imagery, persecution, violence, or hate speech are depicted or discussed, classify pred_is_harmful as true.
+Determine if this video segment contains content that violates YouTube Community Guidelines or is harmful, unsafe, offensive, discriminatory, or inappropriate.
+Also evaluate whether Educational, Documentary, Scientific, or Artistic (EDSA) exceptions apply (e.g. historical footage, news reporting, educational museum context, artistic dramatization with clear educational value).
 
 Respond with a JSON object containing:
-- pred_is_harmful: boolean (true if harmful/sensitive content is present, false only if completely safe)
+- pred_is_harmful: boolean (true if harmful/sensitive content or policy violation is present, false only if completely safe or fully protected under EDSA exception)
 - confidence: float between 0.0 and 1.0
-- explanation: string (concise explanation of why the content is safe or harmful)
-- harm_categories: list of 1-3 relevant categories (e.g. ["Hate Symbols", "Persecution", "Extremism"])
+- harm_categories: list of 1-3 relevant categories (e.g. ["Hate Symbols", "Persecution", "Extremism", "Violent Content"])
+- cited_policy_clauses: list of objects identifying specific violated clauses, e.g. [{{"clause_id": "YT-HATE-02", "clause_name": "Extremist & White Supremacist Imagery", "reason": "Nazi swastika banner clearly displayed."}}]
+- is_edsa_exempt: boolean (true if Educational, Documentary, Scientific, or Artistic context legitimately exempts the content)
+- edsa_rationale: string (concise explanation of why EDSA applies or why it does not apply)
+- suggested_edits: list of objects suggesting remediation actions to make the video compliant, e.g. [{{"action": "blur", "target": "background banner", "instruction": "Blur swastika flag visible in frame"}}] (action can be 'blur', 'trim', 'beep', or 'age_restrict')
 - factor_weights: object with percentage contributions; keys 'visual', 'audio', 'text' (each 0-100)
+- explanation: string (concise explanation of why the content is safe or harmful and which policy guidelines were assessed)
 
 Only return valid JSON without any additional text."""
 
@@ -1010,9 +1023,68 @@ Only return valid JSON without any additional text."""
 
                 factor_weights = _normalize_factor_weights(result.get("factor_weights"))
 
+                # Parse policy citations
+                raw_cited = result.get("cited_policy_clauses")
+                cited_policies = []
+                if isinstance(raw_cited, list):
+                    for c in raw_cited:
+                        if isinstance(c, dict) and c.get("clause_id"):
+                            cited_policies.append({
+                                "clause_id": str(c.get("clause_id", "")),
+                                "clause_name": str(c.get("clause_name", c.get("name", ""))),
+                                "reason": str(c.get("reason", c.get("explanation", ""))),
+                            })
+                elif isinstance(raw_cited, dict) and raw_cited.get("clause_id"):
+                    cited_policies.append({
+                        "clause_id": str(raw_cited.get("clause_id", "")),
+                        "clause_name": str(raw_cited.get("clause_name", "")),
+                        "reason": str(raw_cited.get("reason", "")),
+                    })
+
+                # Fallback policy citation for harmful events if LLM didn't cite one
+                if is_harmful and not cited_policies and retrieved_policies:
+                    top_p = retrieved_policies[0]
+                    cited_policies.append({
+                        "clause_id": top_p.get("clause_id", "YT-GEN-01"),
+                        "clause_name": f"{top_p.get('category', '')} - {top_p.get('subclause', '')}",
+                        "reason": f"Content triggered safety policy match with {top_p.get('clause_id')}: {top_p.get('summary', '')[:120]}...",
+                    })
+
+                # Parse EDSA exceptions
+                is_edsa_exempt = bool(result.get("is_edsa_exempt", False))
+                edsa_rationale = str(result.get("edsa_rationale", "") or "")
+
+                # Parse suggested edits
+                raw_edits = result.get("suggested_edits")
+                suggested_edits = []
+                if isinstance(raw_edits, list):
+                    for e in raw_edits:
+                        if isinstance(e, dict):
+                            suggested_edits.append({
+                                "action": str(e.get("action", "trim")),
+                                "target": str(e.get("target", "segment")),
+                                "instruction": str(e.get("instruction", "Trim or modify flagged content")),
+                            })
+                elif isinstance(raw_edits, dict):
+                    suggested_edits.append({
+                        "action": str(raw_edits.get("action", "trim")),
+                        "target": str(raw_edits.get("target", "segment")),
+                        "instruction": str(raw_edits.get("instruction", "Trim or modify flagged content")),
+                    })
+
+                # Fallback suggested edit for harmful events
+                if is_harmful and not suggested_edits and retrieved_policies:
+                    top_p = retrieved_policies[0]
+                    suggested_edits.append({
+                        "action": "trim",
+                        "target": "flagged segment",
+                        "instruction": top_p.get("suggested_action", "Trim segment or blur sensitive visual elements."),
+                    })
+
                 logger.debug(
                     f"LLM decision for segment {segment_info}: harmful={is_harmful}, "
-                    f"confidence={calibrated_conf:.3f} (raw={raw_conf:.3f}, source={cal_source})"
+                    f"confidence={calibrated_conf:.3f} (raw={raw_conf:.3f}, source={cal_source}), "
+                    f"policies={len(cited_policies)}, edsa={is_edsa_exempt}"
                 )
 
                 return {
@@ -1024,6 +1096,14 @@ Only return valid JSON without any additional text."""
                     "categories": categories,
                     "explanation": explanation,
                     "factor_weights": factor_weights,
+                    "cited_policy_clauses": cited_policies,
+                    "is_edsa_exempt": is_edsa_exempt,
+                    "edsa_rationale": edsa_rationale,
+                    "suggested_edits": suggested_edits,
+                    "retrieved_policies": [
+                        {"clause_id": p.get("clause_id"), "subclause": p.get("subclause"), "score": p.get("relevance_score")}
+                        for p in retrieved_policies
+                    ],
                     "_token_usage": result.get("_token_usage"),
                     "_logprobs": result.get("_logprobs"),
                 }
@@ -1043,6 +1123,11 @@ Only return valid JSON without any additional text."""
         "calibration_source": "error_fallback",
         "categories": [],
         "explanation": "Analysis failed - assuming safe",
+        "cited_policy_clauses": [],
+        "is_edsa_exempt": False,
+        "edsa_rationale": "",
+        "suggested_edits": [],
+        "retrieved_policies": [],
     }
 
 
@@ -1463,6 +1548,11 @@ async def analyze_segments( # combines transcription, ocr and caption, gives to 
                         "explanation": decision["explanation"],
                         "categories": decision["categories"],
                         "factor_weights": decision.get("factor_weights"),
+                        "cited_policy_clauses": decision.get("cited_policy_clauses", []),
+                        "is_edsa_exempt": decision.get("is_edsa_exempt", False),
+                        "edsa_rationale": decision.get("edsa_rationale", ""),
+                        "suggested_edits": decision.get("suggested_edits", []),
+                        "retrieved_policies": decision.get("retrieved_policies", []),
                         "suspicion_method": suspicion_result.get("method", "unknown"),
                         "planning_mode": planning_mode,
                         "planned_points": len(planned_timestamps)

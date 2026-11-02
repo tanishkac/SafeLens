@@ -7,6 +7,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     Float,
+    Boolean,
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
@@ -103,6 +104,12 @@ class HarmfulEvent(Base):
     analysis_run_id = Column(
         String, ForeignKey("analysis_runs.id", ondelete="SET NULL"), nullable=True
     )
+
+    # Policy RAG & Compliance fields
+    cited_policies = Column(Text, nullable=True)     # JSON array: [{"clause_id": "YT-HATE-02", ...}]
+    suggested_edits = Column(Text, nullable=True)    # JSON array: [{"action": "blur", ...}]
+    is_edsa_exempt = Column(Boolean, default=False)  # True if EDSA educational exception applies
+    edsa_rationale = Column(Text, nullable=True)     # Justification for EDSA finding
 
     video = relationship("Video", back_populates="harmful_events")
     visual_evidence = relationship("VisualEvidence", back_populates="harmful_event")
@@ -201,3 +208,22 @@ def get_db():
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    # Ensure newly added columns exist in sqlite if created previously
+    try:
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            columns_to_add = [
+                ("cited_policies", "TEXT"),
+                ("suggested_edits", "TEXT"),
+                ("is_edsa_exempt", "BOOLEAN DEFAULT 0"),
+                ("edsa_rationale", "TEXT"),
+            ]
+            for col_name, col_type in columns_to_add:
+                try:
+                    conn.execute(text(f"ALTER TABLE harmful_events ADD COLUMN {col_name} {col_type}"))
+                    conn.commit()
+                except Exception:
+                    # Column already exists
+                    pass
+    except Exception:
+        pass

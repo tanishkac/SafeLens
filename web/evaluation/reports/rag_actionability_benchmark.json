@@ -1,0 +1,167 @@
+{
+  "experiment_name": "Experiment 2: Actionability & Policy RAG Attribution",
+  "benchmark_cases_count": 8,
+  "metrics": {
+    "policy_retrieval_top1_accuracy_pct": 50.0,
+    "policy_retrieval_top2_accuracy_pct": 62.5,
+    "actionability_coverage_pct": {
+      "baseline_mvp": 0.0,
+      "target_rag_system": 100.0
+    },
+    "appeal_defensibility_rate_pct": {
+      "baseline_mvp": 0.0,
+      "target_rag_system": 50.0
+    },
+    "clause_attribution_precision_pct": {
+      "baseline_mvp": 0.0,
+      "target_rag_system": 62.5
+    },
+    "average_rag_retrieval_latency_ms": 51.57
+  },
+  "per_case_results": [
+    {
+      "case_id": "CASE-01",
+      "expected_clause": "YT-HATE-02",
+      "retrieved_clauses": [
+        "YT-HATE-02",
+        "YT-VIOL-01"
+      ],
+      "top1_match": true,
+      "top2_match": true,
+      "has_clause_citation": true,
+      "cited_clause_id": "YT-HATE-02",
+      "has_suggested_edit": true,
+      "suggested_action": "Apply a blur or visual crop to obscure the hate symbol from the frame.",
+      "has_defensible_appeal": true,
+      "appeal_strength": "High (Strong EDSA Documentary Basis)",
+      "edsa_applicable": true,
+      "latency_ms": 401.49
+    },
+    {
+      "case_id": "CASE-02",
+      "expected_clause": "YT-HATE-02",
+      "retrieved_clauses": [
+        "YT-HATE-02",
+        "YT-HATE-01"
+      ],
+      "top1_match": true,
+      "top2_match": true,
+      "has_clause_citation": true,
+      "cited_clause_id": "YT-HATE-02",
+      "has_suggested_edit": true,
+      "suggested_action": "Apply a blur or visual crop to obscure the hate symbol from the frame.",
+      "has_defensible_appeal": true,
+      "appeal_strength": "High (Strong EDSA Documentary Basis)",
+      "edsa_applicable": true,
+      "latency_ms": 1.99
+    },
+    {
+      "case_id": "CASE-03",
+      "expected_clause": "YT-VIOL-01",
+      "retrieved_clauses": [
+        "YT-VIOL-02",
+        "YT-VIOL-03"
+      ],
+      "top1_match": false,
+      "top2_match": false,
+      "has_clause_citation": true,
+      "cited_clause_id": "YT-VIOL-02",
+      "has_suggested_edit": true,
+      "suggested_action": "Blur the graphic wound/blood area and insert a viewer advisory disclaimer.",
+      "has_defensible_appeal": false,
+      "appeal_strength": "High (Strong EDSA Documentary Basis)",
+      "edsa_applicable": true,
+      "latency_ms": 1.45
+    },
+    {
+      "case_id": "CASE-04",
+      "expected_clause": "YT-WEAP-01",
+      "retrieved_clauses": [
+        "YT-WEAP-02",
+        "YT-WEAP-01"
+      ],
+      "top1_match": false,
+      "top2_match": true,
+      "has_clause_citation": true,
+      "cited_clause_id": "YT-WEAP-02",
+      "has_suggested_edit": true,
+      "suggested_action": "Remove the instructional fabrication demonstration and blueprint links.",
+      "has_defensible_appeal": false,
+      "appeal_strength": "High (Strong EDSA Documentary Basis)",
+      "edsa_applicable": true,
+      "latency_ms": 1.46
+    },
+    {
+      "case_id": "CASE-05",
+      "expected_clause": "YT-HARASS-01",
+      "retrieved_clauses": [
+        "YT-HARS-02",
+        "YT-HARS-01"
+      ],
+      "top1_match": false,
+      "top2_match": false,
+      "has_clause_citation": true,
+      "cited_clause_id": "YT-HARS-02",
+      "has_suggested_edit": true,
+      "suggested_action": "Blur out the text displaying private information and mute corresponding audio.",
+      "has_defensible_appeal": false,
+      "appeal_strength": "High (Strong EDSA Documentary Basis)",
+      "edsa_applicable": true,
+      "latency_ms": 1.87
+    },
+    {
+      "case_id": "CASE-06",
+      "expected_clause": "YT-CYBER-01",
+      "retrieved_clauses": [
+        "YT-WEAP-02",
+        "YT-VIOL-02"
+      ],
+      "top1_match": false,
+      "top2_match": false,
+      "has_clause_citation": true,
+      "cited_clause_id": "YT-WEAP-02",
+      "has_suggested_edit": true,
+      "suggested_action": "Remove the instructional fabrication demonstration and blueprint links.",
+      "has_defensible_appeal": false,
+      "appeal_strength": "High (Strong EDSA Documentary Basis)",
+      "edsa_applicable": true,
+      "latency_ms": 1.48
+    },
+    {
+      "case_id": "CASE-07",
+      "expected_clause": "YT-HATE-01",
+      "retrieved_clauses": [
+        "YT-HATE-01",
+        "YT-HATE-02"
+      ],
+      "top1_match": true,
+      "top2_match": true,
+      "has_clause_citation": true,
+      "cited_clause_id": "YT-HATE-01",
+      "has_suggested_edit": true,
+      "suggested_action": "Mute or bleep the triggering spoken word or phrase between specified timestamps.",
+      "has_defensible_appeal": true,
+      "appeal_strength": "High (Strong EDSA Documentary Basis)",
+      "edsa_applicable": true,
+      "latency_ms": 1.41
+    },
+    {
+      "case_id": "CASE-08",
+      "expected_clause": "YT-DANG-01",
+      "retrieved_clauses": [
+        "YT-DANG-01",
+        "YT-WEAP-01"
+      ],
+      "top1_match": true,
+      "top2_match": true,
+      "has_clause_citation": true,
+      "cited_clause_id": "YT-DANG-01",
+      "has_suggested_edit": true,
+      "suggested_action": "Delete the demonstration of the dangerous act.",
+      "has_defensible_appeal": true,
+      "appeal_strength": "High (Strong EDSA Documentary Basis)",
+      "edsa_applicable": true,
+      "latency_ms": 1.39
+    }
+  ]
+}

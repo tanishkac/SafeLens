@@ -1,5 +1,17 @@
 import { ClusteringConfig, ClusteredHarmfulContent } from "@/utils/clustering";
 
+export interface PolicyClauseCitation {
+    clause_id: string;
+    clause_name?: string;
+    reason?: string;
+}
+
+export interface SuggestedEdit {
+    action: string;
+    target?: string;
+    instruction?: string;
+}
+
 export interface HarmfulContent {
     startTime: number;
     endTime: number;
@@ -15,6 +27,10 @@ export interface HarmfulContent {
         audio?: number;
         text?: number;
     };
+    citedPolicyClauses?: PolicyClauseCitation[];
+    isEdsaExempt?: boolean;
+    edsaRationale?: string;
+    suggestedEdits?: SuggestedEdit[];
     rawData?: any; // Store original backend event data
 }
 

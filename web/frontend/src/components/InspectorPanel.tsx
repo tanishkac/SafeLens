@@ -5,12 +5,16 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Slider } from "@/components/ui/slider";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import AppealModal from "@/components/AppealModal";
+import { Scale, Sparkles, AlertCircle, Wrench, GraduationCap, ShieldCheck, FileText } from "lucide-react";
 import type { HarmfulContent, TranscriptionWord, TranscriptionLine } from "@/types/analysis";
 import SyncedLyrics from "@/components/SyncedLyrics";
 import { usePlayer } from "@/context/PlayerContext";
 import { segmentWordsIntoLines } from "@/utils/transcription";
 
 interface InspectorPanelProps {
+    videoId?: string;
     harmfulEvents: HarmfulContent[];
     transcriptionWords?: TranscriptionWord[];
     transcriptionFull?: string;
@@ -115,6 +119,7 @@ function RadarChart({ scores }: { scores: { visual: number, audio: number, text:
 }
 
 export default function InspectorPanel({
+    videoId,
     harmfulEvents,
     transcriptionWords,
     transcriptionFull,
@@ -122,6 +127,7 @@ export default function InspectorPanel({
     const { subscribeTime } = usePlayer();
     const [currentTimestamp, setCurrentTimestamp] = useState(0);
     const [confidenceThreshold, setConfidenceThreshold] = useState(80);
+    const [isAppealModalOpen, setIsAppealModalOpen] = useState(false);
 
     // Subscribe to time updates from Context
     useEffect(() => {
@@ -180,6 +186,11 @@ export default function InspectorPanel({
         return 0;
     }, [contextLines, currentTimestamp]);
 
+    const citedPolicies = activeEvent?.citedPolicyClauses || [];
+    const suggestedEdits = activeEvent?.suggestedEdits || [];
+    const hasEdsa = Boolean(activeEvent?.isEdsaExempt);
+    const edsaRationale = activeEvent?.edsaRationale;
+
     return (
         <div className="h-full flex flex-col space-y-4">
             {/* Header: Confidence Slider */}
@@ -203,8 +214,11 @@ export default function InspectorPanel({
 
             {/* Tabs */}
             <Tabs defaultValue="analysis" className="flex-1 flex flex-col overflow-hidden">
-                <TabsList className="grid w-full grid-cols-2 shrink-0 mb-2 h-11">
+                <TabsList className="grid w-full grid-cols-3 shrink-0 mb-2 h-11">
                     <TabsTrigger value="analysis" className="text-base font-medium">Analysis</TabsTrigger>
+                    <TabsTrigger value="policy" className="text-base font-medium flex items-center gap-1.5">
+                        <Scale className="h-4 w-4" /> Policy RAG
+                    </TabsTrigger>
                     <TabsTrigger value="transcript" className="text-base font-medium">Transcript</TabsTrigger>
                 </TabsList>
 
@@ -212,9 +226,9 @@ export default function InspectorPanel({
                 <TabsContent value="analysis" className="flex-1 overflow-y-auto min-h-0">
                     <Card className="border-0 shadow-none bg-transparent">
                         {activeEvent ? (
-                            <div className="space-y-8">
+                            <div className="space-y-6">
                                 {/* Verdict Header */}
-                                <div className="flex items-center justify-between border-b-2 border-border pb-5">
+                                <div className="flex items-center justify-between border-b-2 border-border pb-4">
                                     <span className="text-2xl font-bold text-destructive">High Risk</span>
                                     <Badge variant="destructive" className="text-xl px-4 py-2 font-mono font-bold shadow-sm">
                                         {Math.round(activeEvent.confidence * 100)}%
@@ -244,11 +258,31 @@ export default function InspectorPanel({
                                         </h4>
                                     </div>
                                     <div className="bg-muted/40 p-5 rounded-xl border border-border/50">
-                                        <p className="text-xl font-medium text-foreground leading-relaxed">
+                                        <p className="text-base font-medium text-foreground leading-relaxed">
                                             {activeEvent.description}
                                         </p>
                                     </div>
                                 </div>
+
+                                {/* Quick Policy Citation Strip */}
+                                {citedPolicies.length > 0 && (
+                                    <div className="p-3.5 bg-blue-50/70 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-900 rounded-xl flex items-center justify-between gap-2">
+                                        <div className="flex items-center gap-2">
+                                            <Scale className="h-4 w-4 text-blue-600 dark:text-blue-400 shrink-0" />
+                                            <span className="text-xs font-semibold text-blue-900 dark:text-blue-200">
+                                                Cited: {citedPolicies.map(c => c.clause_id).join(", ")}
+                                            </span>
+                                        </div>
+                                        <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            onClick={() => setIsAppealModalOpen(true)}
+                                            className="text-xs h-7 text-blue-700 dark:text-blue-300 hover:bg-blue-100"
+                                        >
+                                            Appeal Draft &rarr;
+                                        </Button>
+                                    </div>
+                                )}
 
                                 {/* Live Context - 3 line display */}
                                 {contextLines.current && (
@@ -260,14 +294,11 @@ export default function InspectorPanel({
                                             </h4>
                                         </div>
                                         <div className="bg-background rounded-xl border-2 border-border/60 overflow-hidden shadow-sm">
-                                            {/* Previous line */}
                                             {contextLines.prev && (
                                                 <div className="px-4 py-3 text-base text-muted-foreground/60 border-b border-border/40 bg-muted/20">
                                                     {contextLines.prev.text}
                                                 </div>
                                             )}
-
-                                            {/* Current line with word highlighting */}
                                             <div className="px-4 py-5 bg-background">
                                                 <p className="text-xl leading-loose font-medium">
                                                     {contextLines.current.words.map((w, idx) => (
@@ -285,8 +316,6 @@ export default function InspectorPanel({
                                                     ))}
                                                 </p>
                                             </div>
-
-                                            {/* Next line */}
                                             {contextLines.next && (
                                                 <div className="px-4 py-3 text-base text-muted-foreground/60 border-t border-border/40 bg-muted/20">
                                                     {contextLines.next.text}
@@ -310,7 +339,126 @@ export default function InspectorPanel({
                     </Card>
                 </TabsContent>
 
-                {/* TAB B: Transcript */}
+                {/* TAB B: Policy RAG & Remediations */}
+                <TabsContent value="policy" className="flex-1 overflow-y-auto min-h-0 space-y-5">
+                    {activeEvent ? (
+                        <div className="space-y-6">
+                            {/* Cited Policies Section */}
+                            <div className="space-y-3">
+                                <div className="flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-muted-foreground">
+                                    <Scale className="h-4 w-4 text-primary" />
+                                    <span>Cited YouTube Community Guidelines</span>
+                                </div>
+                                {citedPolicies.length > 0 ? (
+                                    <div className="space-y-2.5">
+                                        {citedPolicies.map((c, i) => (
+                                            <div key={i} className="p-3.5 rounded-lg border bg-card/60 shadow-xs space-y-1">
+                                                <div className="flex items-center justify-between">
+                                                    <Badge variant="secondary" className="font-mono text-xs font-bold text-primary">
+                                                        {c.clause_id}
+                                                    </Badge>
+                                                    <span className="text-xs font-semibold text-muted-foreground">Official Rule</span>
+                                                </div>
+                                                <h5 className="text-sm font-bold text-foreground mt-1">{c.clause_name || "Community Guideline"}</h5>
+                                                {c.reason && (
+                                                    <p className="text-xs text-muted-foreground mt-1 leading-relaxed">{c.reason}</p>
+                                                )}
+                                            </div>
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <div className="p-4 rounded-lg border bg-muted/30 text-xs text-muted-foreground">
+                                        General content safety threshold applied.
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* EDSA Exception Section */}
+                            <div className="space-y-3">
+                                <div className="flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-muted-foreground">
+                                    <GraduationCap className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+                                    <span>EDSA Educational Context</span>
+                                </div>
+                                <div className={`p-4 rounded-lg border ${hasEdsa ? "bg-emerald-50/70 border-emerald-200 dark:bg-emerald-950/30 dark:border-emerald-900" : "bg-muted/40 border-border"}`}>
+                                    <div className="flex items-center gap-2 mb-1.5">
+                                        {hasEdsa ? (
+                                            <Badge className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs">
+                                                🎓 Exemption Applicable
+                                            </Badge>
+                                        ) : (
+                                            <Badge variant="outline" className="text-xs">
+                                                No EDSA Exemption
+                                            </Badge>
+                                        )}
+                                    </div>
+                                    <p className="text-xs text-foreground/80 leading-relaxed">
+                                        {edsaRationale || (hasEdsa ? "Documentary framing protects this segment from direct removal under YouTube EDSA policies." : "Content does not demonstrate sufficient educational or documentary framing.")}
+                                    </p>
+                                </div>
+                            </div>
+
+                            {/* Actionable Remediations */}
+                            <div className="space-y-3">
+                                <div className="flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-muted-foreground">
+                                    <Wrench className="h-4 w-4 text-amber-500" />
+                                    <span>Actionable Remediations</span>
+                                </div>
+                                {suggestedEdits.length > 0 ? (
+                                    <div className="space-y-2">
+                                        {suggestedEdits.map((edit, idx) => (
+                                            <div key={idx} className="p-3.5 rounded-lg border border-amber-200/60 bg-amber-50/40 dark:bg-amber-950/20 dark:border-amber-900/60 flex items-start gap-2.5">
+                                                <span className="text-base mt-0.5">
+                                                    {edit.action === "blur" ? "👁️" : edit.action === "trim" ? "✂️" : edit.action === "beep" ? "🔇" : "⚠️"}
+                                                </span>
+                                                <div className="text-xs">
+                                                    <span className="font-bold text-amber-800 dark:text-amber-300 uppercase tracking-wide">
+                                                        [{edit.action}] {edit.target && `• ${edit.target}`}
+                                                    </span>
+                                                    <p className="text-muted-foreground mt-0.5">{edit.instruction}</p>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <div className="p-3.5 rounded-lg border bg-muted/30 text-xs text-muted-foreground">
+                                        Trim flagged timestamps or apply visual blur to restore full monetization.
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Appeal Letter CTA */}
+                            <Button 
+                                onClick={() => setIsAppealModalOpen(true)}
+                                className="w-full text-sm font-semibold flex items-center justify-center gap-2 py-5 shadow-md"
+                            >
+                                <Scale className="h-4 w-4" />
+                                Generate Formal YouTube Appeal Draft
+                            </Button>
+                        </div>
+                    ) : (
+                        <div className="flex flex-col items-center justify-center h-full text-center space-y-4 p-6">
+                            <Scale className="h-12 w-12 text-muted-foreground/40" />
+                            <div>
+                                <h4 className="font-bold text-base text-foreground">YouTube Policy Intelligence</h4>
+                                <p className="text-xs text-muted-foreground max-w-[260px] mt-1">
+                                    Scrub the timeline to any flagged event to view clause citations and EDSA analysis, or draft a full video appeal below.
+                                </p>
+                            </div>
+                            {harmfulEvents.length > 0 && (
+                                <Button 
+                                    onClick={() => setIsAppealModalOpen(true)}
+                                    variant="outline" 
+                                    size="sm" 
+                                    className="text-xs"
+                                >
+                                    Draft Full Appeal ({harmfulEvents.length} violations)
+                                </Button>
+                            )}
+                        </div>
+                    )}
+                </TabsContent>
+
+                {/* TAB C: Transcript */}
                 <TabsContent value="transcript" className="flex-1 overflow-hidden mt-4 bg-slate-50/50 rounded-xl border relative text-xl">
                     {transcriptionWords && transcriptionWords.length > 0 ? (
                         <div className="absolute inset-0">
@@ -326,6 +474,13 @@ export default function InspectorPanel({
                     )}
                 </TabsContent>
             </Tabs>
+
+            {/* Appeal Modal */}
+            <AppealModal
+                videoId={videoId || ""}
+                isOpen={isAppealModalOpen}
+                onClose={() => setIsAppealModalOpen(false)}
+            />
         </div>
     );
 }

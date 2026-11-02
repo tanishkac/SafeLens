@@ -135,6 +135,11 @@ function VideoAnalysisContent() {
                     : "analysis";
                 const evidence = event.audio_evidence || "";
 
+                const citedPolicyClauses = data.cited_policy_clauses || event.cited_policy_clauses || [];
+                const isEdsaExempt = Boolean(data.is_edsa_exempt || event.is_edsa_exempt);
+                const edsaRationale = data.edsa_rationale || event.edsa_rationale || "";
+                const suggestedEdits = data.suggested_edits || event.suggested_edits || [];
+
                 return {
                     startTime: start,
                     endTime: end,
@@ -146,6 +151,10 @@ function VideoAnalysisContent() {
                     detectionMethod: method,
                     categories,
                     factorWeights,
+                    citedPolicyClauses,
+                    isEdsaExempt,
+                    edsaRationale,
+                    suggestedEdits,
                     rawData: event,
                 } as HarmfulContent;
             }
@@ -196,6 +205,10 @@ function VideoAnalysisContent() {
                                       : undefined,
                           }
                         : undefined,
+                citedPolicyClauses: event.cited_policy_clauses || [],
+                isEdsaExempt: Boolean(event.is_edsa_exempt),
+                edsaRationale: event.edsa_rationale || "",
+                suggestedEdits: event.suggested_edits || [],
                 rawData: event,
             } as HarmfulContent;
         });
@@ -428,6 +441,7 @@ function VideoAnalysisContent() {
                 {/* Right Column - Inspector Panel (33%) */}
                 <div className="col-span-4 h-full bg-card rounded-lg border shadow-sm p-4 min-h-0 overflow-hidden">
                     <InspectorPanel 
+                        videoId={videoId}
                         harmfulEvents={analysisData?.harmfulContent || []}
                         transcriptionWords={analysisData?.transcriptionWords}
                         transcriptionFull={analysisData?.transcription}

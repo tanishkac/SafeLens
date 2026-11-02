@@ -62,6 +62,10 @@ def insert_harmful_events(db: Session, analysis_run_id: int, video_id: str, plan
             factor_weights = data.get("factor_weights")
             explanation = data.get("explanation", "")
             performed = ev.get("analysis_performed", [])
+            cited_policies = data.get("cited_policy_clauses")
+            suggested_edits = data.get("suggested_edits")
+            is_edsa_exempt = bool(data.get("is_edsa_exempt", False))
+            edsa_rationale = data.get("edsa_rationale", "")
 
             row = HarmfulEvent(
                 video_id=video_id,
@@ -80,6 +84,14 @@ def insert_harmful_events(db: Session, analysis_run_id: int, video_id: str, plan
                 verification_source=None,
                 severity=None,
                 analysis_run_id=analysis_run_id,
+                cited_policies=json.dumps(cited_policies, ensure_ascii=False)
+                if cited_policies is not None
+                else None,
+                suggested_edits=json.dumps(suggested_edits, ensure_ascii=False)
+                if suggested_edits is not None
+                else None,
+                is_edsa_exempt=is_edsa_exempt,
+                edsa_rationale=edsa_rationale,
             )
             db.add(row)
             db.flush()

@@ -528,6 +528,10 @@ async def get_analysis_results(
                 "timestamp": event.timestamp,
                 "categories": json.loads(event.categories) if event.categories else [],
                 "factor_weights": json.loads(event.factor_weights) if getattr(event, "factor_weights", None) else None,
+                "cited_policy_clauses": json.loads(event.cited_policies) if getattr(event, "cited_policies", None) else [],
+                "suggested_edits": json.loads(event.suggested_edits) if getattr(event, "suggested_edits", None) else [],
+                "is_edsa_exempt": bool(getattr(event, "is_edsa_exempt", False)),
+                "edsa_rationale": getattr(event, "edsa_rationale", ""),
                 "verification_source": event.verification_source,
                 "explanation": event.explanation,
                 "confidence_score": event.confidence_score,
@@ -575,6 +579,83 @@ async def get_analysis_results(
         safety_report=safety_report,
         created_at=video.uploaded_at,
     )
+
+
+@router.get("/analyze/{video_id}/appeal-draft")
+@router.get("/videos/{video_id}/appeal-draft")
+async def get_appeal_draft(
+    video_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Generate an automated YouTube Community Guidelines appeal letter
+    for a video based on cited policies and EDSA exceptions.
+    """
+    video = db.query(Video).filter(Video.id == video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # Gather harmful events
+    harmful_events = []
+
+    # 1. Try reading from v2 safety report on disk or DB
+    report_data = None
+    if video.safety_report:
+        try:
+            report_data = json.loads(str(video.safety_report))
+        except Exception:
+            pass
+
+    if not report_data:
+        video_dir = Path("./videos") / video_id
+        report_file = video_dir / "safety_report.json"
+        if report_file.exists():
+            try:
+                with open(report_file, "r", encoding="utf-8") as f:
+                    report_data = json.load(f)
+            except Exception:
+                pass
+
+    if report_data and isinstance(report_data, dict):
+        harmful_events = report_data.get("harmful_events", [])
+
+    # 2. Fallback to DB harmful_events rows if report didn't have any
+    if not harmful_events and video.harmful_events:
+        for ev in video.harmful_events:
+            harmful_events.append({
+                "start_time": ev.start_time or ev.timestamp,
+                "end_time": ev.end_time or (ev.timestamp + 5.0),
+                "categories": json.loads(ev.categories) if ev.categories else [],
+                "explanation": ev.explanation or "",
+                "cited_policies": json.loads(ev.cited_policies) if getattr(ev, "cited_policies", None) else [],
+                "suggested_edits": json.loads(ev.suggested_edits) if getattr(ev, "suggested_edits", None) else [],
+                "is_edsa_exempt": bool(getattr(ev, "is_edsa_exempt", False)),
+                "edsa_rationale": getattr(ev, "edsa_rationale", ""),
+            })
+
+    from ..services.appeal_generator import generate_appeal_letter
+
+    # Optionally try to get SafetyLLM
+    llm_instance = None
+    try:
+        from ..tools.llm import SafetyLLM
+        llm_instance = SafetyLLM()
+    except Exception:
+        pass
+
+    video_metadata = {
+        "id": video.id,
+        "title": getattr(video, "title", None) or getattr(video, "original_filename", None) or f"Video {video.id[:8]}",
+        "duration": video.duration,
+        "safety_rating": video.safety_rating,
+    }
+
+    result = generate_appeal_letter(
+        video_metadata=video_metadata,
+        harmful_events=harmful_events,
+        llm=llm_instance,
+    )
+    return result
 
 
 @router.post("/analyze/{video_id}/retry")

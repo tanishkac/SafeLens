@@ -1,0 +1,295 @@
+{
+  "version": "1.0.0",
+  "source": "Official YouTube Community Guidelines & Policy Hub",
+  "last_updated": "2026-11-02",
+  "edsa_framework_overview": "YouTube allows content that would otherwise violate policies if it has clear Educational, Documentary, Scientific, or Artistic (EDSA) context. The context must be explicit in the audio commentary, title, description, or on-screen text, and must not gratuitously shock or promote the prohibited act.",
+  "policies": [
+    {
+      "clause_id": "YT-HATE-01",
+      "category": "Hate Speech",
+      "subclause": "Dehumanizing Language & Slurs against Protected Groups",
+      "official_title": "YouTube Hate Speech Policy - Dehumanizing Content",
+      "summary": "Content that uses dehumanizing language, metaphors comparing humans to vermin/insects/disease, racial or ethnic slurs, or claims of biological/moral inferiority targeting protected groups based on race, ethnicity, religion, disability, age, nationality, sexual orientation, or gender identity.",
+      "triggers": [
+        "racial slurs",
+        "ethnic slurs",
+        "comparing ethnic groups to cockroaches, parasites, or cancer",
+        "claims that a group is subhuman",
+        "dehumanizing epithets in spoken dialogue or on-screen text"
+      ],
+      "severity_level": "Critical",
+      "edsa_exceptions": "Historical speech examined in an objective educational documentary, museum presentation, or journalistic news broadcast where the slur or speech is explicitly analyzed and condemned rather than celebrated.",
+      "suggested_action": "Mute or bleep the triggering spoken word or phrase between specified timestamps.",
+      "appeal_guidance": "Cite that the spoken word was historical or third-party speech presented for educational critique without endorsement, qualifying under YouTube EDSA Hate Speech guidelines."
+    },
+    {
+      "clause_id": "YT-HATE-02",
+      "category": "Hate Symbols",
+      "subclause": "Extremist, White Supremacist & Neo-Nazi Imagery",
+      "official_title": "YouTube Hate Speech Policy - Hate Group Insignia & Symbols",
+      "summary": "Visual depiction or display of symbols associated with designated hate groups, including Nazi swastikas, SS Totenkopf, SS lightning bolts, Ku Klux Klan robes, and white supremacist iconography used to promote hateful ideology.",
+      "triggers": [
+        "swastika flag",
+        "SS runes",
+        "Nazi uniform insignia",
+        "KKK hood or burning cross",
+        "white supremacist celtic cross or 1488 slogans on signs"
+      ],
+      "severity_level": "Critical",
+      "edsa_exceptions": "Documentary footage about World War II, museum artifact preservation, historical war reenactments, or news reporting covering political protests with clear neutral framing.",
+      "suggested_action": "Apply a blur or visual crop to obscure the hate symbol from the frame.",
+      "appeal_guidance": "Demonstrate that the imagery appears in a historical WW2 documentary or museum educational archive with neutral narrator framing, satisfying EDSA Hate Imagery exceptions."
+    },
+    {
+      "clause_id": "YT-HATE-03",
+      "category": "Hate Speech",
+      "subclause": "Incitement to Hatred & Exclusionary Calls",
+      "official_title": "YouTube Hate Speech Policy - Calls to Violence & Exclusion",
+      "summary": "Content that incites hatred, encourages violence, or advocates for the physical segregation, deportation, or exclusion of protected groups from society.",
+      "triggers": [
+        "calls to expel minority groups",
+        "chanting slogans inciting violence against religious groups",
+        "advocating segregation or physical attacks",
+        "blood-and-soil chants"
+      ],
+      "severity_level": "Critical",
+      "edsa_exceptions": "Exclusively investigative journalism exposing extremist rallies where the report warns viewers and provides analytical commentary.",
+      "suggested_action": "Trim the exclusionary chant or spoken incitement segment completely.",
+      "appeal_guidance": "Provide context proving investigative news intent with explicit condemnation of the chants shown."
+    },
+    {
+      "clause_id": "YT-HATE-04",
+      "category": "Hate Speech",
+      "subclause": "Denial of Genocides & Mass Atrocities",
+      "official_title": "YouTube Hate Speech Policy - Major Violent Event Denial",
+      "summary": "Content that denies, trivializes, or minimizes well-documented violent events and genocides, including the Holocaust, the Holodomor, or the Rwandan Genocide.",
+      "triggers": [
+        "Holocaust denial statements",
+        "claims that mass extermination camps were fabricated",
+        "minimizing official casualty numbers of recognized genocides"
+      ],
+      "severity_level": "Critical",
+      "edsa_exceptions": "Academic refutation of historical denialism that quotes the denier only to disprove them with verified historical evidence.",
+      "suggested_action": "Remove or mute the denial statement segment.",
+      "appeal_guidance": "Show academic commentary disproving historical denialism."
+    },
+    {
+      "clause_id": "YT-HARS-01",
+      "category": "Harassment",
+      "subclause": "Targeted Malicious Insults & Personal Defamation",
+      "official_title": "YouTube Harassment and Cyberbullying Policy - Severe Personal Abuse",
+      "summary": "Content that targets an identifiable individual with prolonged malicious insults, physical appearance shaming, doxxing, or malicious harassment intended to humiliate or intimidate.",
+      "triggers": [
+        "targeted insults focused on intrinsic traits",
+        "calling someone repulsive or disgusting with malicious intent",
+        "repeated personal attacks across video runtime"
+      ],
+      "severity_level": "High",
+      "edsa_exceptions": "Public interest debates, satirical commentary on public officials or high-profile public figures, provided it does not cross into extreme threats or hate speech.",
+      "suggested_action": "Trim the targeted insult segment or re-record with constructive critique.",
+      "appeal_guidance": "Highlight that the subject is a public figure engaged in public policy debate under fair commentary rules."
+    },
+    {
+      "clause_id": "YT-HARS-02",
+      "category": "Harassment",
+      "subclause": "Doxxing & Revealing Personally Identifiable Information",
+      "official_title": "YouTube Harassment Policy - Doxxing & Private Information",
+      "summary": "Sharing non-public personal information, including home addresses, private phone numbers, national identification numbers, or private emails with the intent to facilitate offline harm or harassment.",
+      "triggers": [
+        "displaying home address on screen",
+        "reading private phone numbers or credit card info",
+        "leaking private medical or identity records"
+      ],
+      "severity_level": "Critical",
+      "edsa_exceptions": "Information that is already part of official public government registries or news releases with consent.",
+      "suggested_action": "Blur out the text displaying private information and mute corresponding audio.",
+      "appeal_guidance": "Confirm that all private information has been redacted or obscured."
+    },
+    {
+      "clause_id": "YT-VIOL-01",
+      "category": "Violence & Graphic Content",
+      "subclause": "Real-World Physical Assault & Street Brawls",
+      "official_title": "YouTube Violent or Graphic Content Policy - Physical Violence",
+      "summary": "Depicting real-world physical violence, street fights, vicious beatings, mob brawls, or attacks on defenseless people intended to shock or disgust viewers.",
+      "triggers": [
+        "punches to the head",
+        "kicking person lying on ground",
+        "street brawl",
+        "physical struggle with violent impact",
+        "gang altercation"
+      ],
+      "severity_level": "High",
+      "edsa_exceptions": "Professional combat sports (MMA, boxing, wrestling) with sanctioned regulatory oversight, or news reports covering riots with blurred violent acts.",
+      "suggested_action": "Trim the physical assault segment (e.g. cut 5–10 seconds of graphic contact).",
+      "appeal_guidance": "Explain that the footage depicts a sanctioned athletic sporting event or verified news reporting."
+    },
+    {
+      "clause_id": "YT-VIOL-02",
+      "category": "Violence & Graphic Content",
+      "subclause": "Severe Blood, Open Wounds & Graphic Gore",
+      "official_title": "YouTube Violent or Graphic Content Policy - Graphic Gore",
+      "summary": "Close-up or gratuitous depictions of severe bleeding, open wounds, severed limbs, mutilated bodies, or intense medical procedures without educational context.",
+      "triggers": [
+        "pool of blood",
+        "severe laceration",
+        "open bone fracture",
+        "graphic surgical incision without educational warning",
+        "decapitation or gore"
+      ],
+      "severity_level": "Critical",
+      "edsa_exceptions": "Medical training videos, certified surgical tutorials intended for medical students, or historical war documentaries with warning disclaimers.",
+      "suggested_action": "Blur the graphic wound/blood area and insert a viewer advisory disclaimer.",
+      "appeal_guidance": "Cite medical training or documentary context with timestamp-specific blurring applied."
+    },
+    {
+      "clause_id": "YT-VIOL-03",
+      "category": "Violence & Graphic Content",
+      "subclause": "Animal Abuse & Cruelty",
+      "official_title": "YouTube Violent or Graphic Content Policy - Animal Harm",
+      "summary": "Content depicting humans inflicting intentional physical harm, torture, staging fights between animals (e.g. dog fighting, cock fighting), or neglecting animals for entertainment.",
+      "triggers": [
+        "staged dog fight",
+        "striking or kicking an animal",
+        "animal in extreme distress or pain caused by humans"
+      ],
+      "severity_level": "Critical",
+      "edsa_exceptions": "Veterinary medical treatment, traditional agriculture practices, or investigative journalism exposing animal cruelty.",
+      "suggested_action": "Remove the abusive scene immediately.",
+      "appeal_guidance": "Demonstrate legitimate veterinary medical rescue or certified investigative journalism."
+    },
+    {
+      "clause_id": "YT-EXTR-01",
+      "category": "Extremism & Terrorist Organizations",
+      "subclause": "Terrorist Propaganda, Recruitment & Anthems",
+      "official_title": "YouTube Violent Criminal Organizations Policy - Terrorist Content",
+      "summary": "Content produced by or praising designated Foreign Terrorist Organizations (FTOs), including official propaganda videos, combat footage, martyrdom anthems, speeches by terrorist leaders, or recruitment material.",
+      "triggers": [
+        "ISIS black standard flag",
+        "Al-Qaeda insignia",
+        "nasheed chants promoting jihadist combat",
+        "terrorist execution videos",
+        "praising designated terrorist leaders"
+      ],
+      "severity_level": "Critical",
+      "edsa_exceptions": "Academic geopolitical security research, counter-terrorism documentary analysis with expert commentary, or verified investigative journalism.",
+      "suggested_action": "Completely remove the designated terrorist media segment.",
+      "appeal_guidance": "Provide credentialed institutional academic or news documentation proving counter-terrorist analysis."
+    },
+    {
+      "clause_id": "YT-EXTR-02",
+      "category": "Extremism & Terrorist Organizations",
+      "subclause": "Glorification of Mass Shootings & Lone-Actor Attacks",
+      "official_title": "YouTube Violent Criminal Organizations Policy - Mass Attack Glorification",
+      "summary": "Praising, celebrating, glorifying, or distributing manifestos and bodycam footage of perpetrators of mass shootings (e.g. Christchurch, Sandy Hook, Columbine).",
+      "triggers": [
+        "shooter bodycam video",
+        "manifesto excerpts glorifying murder",
+        "celebrating mass casualties",
+        "ranking mass killers"
+      ],
+      "severity_level": "Critical",
+      "edsa_exceptions": "None. YouTube enforces a zero-tolerance policy on shooter bodycam footage and manifestos even in news broadcasts.",
+      "suggested_action": "Delete the entire video segment containing shooter footage or manifestos.",
+      "appeal_guidance": "Not appealable if original shooter footage or manifesto is present."
+    },
+    {
+      "clause_id": "YT-WEAP-01",
+      "category": "Firearms & Weapons",
+      "subclause": "Brandishing Firearms in Intimidating or Reckless Context",
+      "official_title": "YouTube Firearms Policy - Dangerous Brandishing",
+      "summary": "Pointing real firearms at the camera or at other individuals in a threatening, reckless, or aggressive manner outside of a designated shooting range or licensed film set.",
+      "triggers": [
+        "gun aimed directly at camera",
+        "brandishing handgun in street confrontation",
+        "reckless weapon waving without finger off trigger"
+      ],
+      "severity_level": "High",
+      "edsa_exceptions": "Fictional dramatic films, cinematic skits with prop guns, video game simulations, or certified firearms safety instruction.",
+      "suggested_action": "Trim the brandishing scene or replace with safe holstered weapon visual.",
+      "appeal_guidance": "Clarify that the video is a scripted creative work with prop weaponry or safety-monitored sport."
+    },
+    {
+      "clause_id": "YT-WEAP-02",
+      "category": "Firearms & Weapons",
+      "subclause": "Homemade Firearms, 3D Printing & Modification Instructions",
+      "official_title": "YouTube Firearms Policy - Gun Manufacturing & Modifications",
+      "summary": "Providing step-by-step instructions, blueprint links, or demonstrations on 3D printing lower receivers, converting semi-automatic firearms to fully automatic (e.g. auto sears / Glock switches), or building homemade silencers.",
+      "triggers": [
+        "3D printed receiver tutorial",
+        "installing full-auto switch",
+        "making homemade silencer from oil filter",
+        "download CAD files for ghost guns"
+      ],
+      "severity_level": "Critical",
+      "edsa_exceptions": "Policy debates and legal news reporting regarding gun legislation without showing the functional fabrication steps.",
+      "suggested_action": "Remove the instructional fabrication demonstration and blueprint links.",
+      "appeal_guidance": "State that content discusses legislative policy without showing fabrication instructions."
+    },
+    {
+      "clause_id": "YT-DANG-01",
+      "category": "Harmful or Dangerous Content",
+      "subclause": "Extremely Dangerous Challenges & Physical Pranks",
+      "official_title": "YouTube Harmful or Dangerous Content Policy - Severe Risk Challenges",
+      "summary": "Encouraging, demonstrating, or executing physical challenges or pranks that carry an imminent risk of severe injury, electrocution, asphyxiation, or death.",
+      "triggers": [
+        "choking games",
+        "tide pod challenge",
+        "jumping from moving vehicles",
+        "swallowing sharp objects or hazardous chemicals"
+      ],
+      "severity_level": "Critical",
+      "edsa_exceptions": "Educational warning videos by medical professionals discussing the physiological dangers of viral challenges.",
+      "suggested_action": "Delete the demonstration of the dangerous act.",
+      "appeal_guidance": "Demonstrate that the content is an accredited health warning or scientific advisory."
+    },
+    {
+      "clause_id": "YT-DANG-02",
+      "category": "Harmful or Dangerous Content",
+      "subclause": "Suicide & Self-Harm Encouragement or Instructions",
+      "official_title": "YouTube Suicide and Self-Harm Policy",
+      "summary": "Content that depicts, glorifies, encourages, or provides instructional methods for suicide, self-cutting, or severe self-harm.",
+      "triggers": [
+        "instructions on lethal self-harm",
+        "showing intentional self-cutting",
+        "suicide pacts",
+        "encouraging someone to end their life"
+      ],
+      "severity_level": "Critical",
+      "edsa_exceptions": "Mental health awareness recovery stories and educational counseling with help-line resources provided.",
+      "suggested_action": "Remove immediately and provide national crisis helpline crisis resources.",
+      "appeal_guidance": "Verify that content is an authorized mental health recovery resource with crisis hotline links."
+    },
+    {
+      "clause_id": "YT-MISI-01",
+      "category": "Misinformation",
+      "subclause": "Electoral Interference & Voter Suppression",
+      "official_title": "YouTube Elections Misinformation Policy",
+      "summary": "Advancing demonstrably false claims regarding official voting dates, ballot polling locations, or voter eligibility requirements intended to deter people from voting.",
+      "triggers": [
+        "telling voters the election date was changed",
+        "false voting instructions like voting via SMS text message",
+        "claims that certain polling stations are cancelled when open"
+      ],
+      "severity_level": "Critical",
+      "edsa_exceptions": "News reports uncovering voter suppression campaigns or comedy sketches with obvious absurdity.",
+      "suggested_action": "Correct the voting information and add official election authority links.",
+      "appeal_guidance": "Show that the content covers political campaigns in a journalistic capacity."
+    },
+    {
+      "clause_id": "YT-MISI-02",
+      "category": "Misinformation",
+      "subclause": "Harmful Medical Misinformation",
+      "official_title": "YouTube Medical Misinformation Policy",
+      "summary": "Content that promotes fake or hazardous medical cures, discourages people from seeking treatment for life-threatening illnesses, or contradicts established local health authorities (WHO, CDC) on vaccine safety.",
+      "triggers": [
+        "drinking bleach cures diseases",
+        "claiming vaccines contain microchips or alter DNA",
+        "denying germ theory or basic pharmacology"
+      ],
+      "severity_level": "Critical",
+      "edsa_exceptions": "Medical discussions reviewing scientific papers or documenting historical alternative medicine.",
+      "suggested_action": "Remove harmful unproven medical claims and cite peer-reviewed clinical data.",
+      "appeal_guidance": "Provide scientific citations and certified medical practitioner disclaimers."
+    }
+  ]
+}
